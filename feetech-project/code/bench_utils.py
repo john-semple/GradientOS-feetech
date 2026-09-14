@@ -29,6 +29,7 @@ REG_PRESENT_VOLTAGE = 0x3E    # 1 byte
 REG_PRESENT_TEMP = 0x3F      # 1 byte
 REG_STATUS = 0x41             # 1 byte
 REG_MOVING = 0x42             # 1 byte (0=stopped, 1=moving)
+REG_OPERATION_MODE = 0x21     # 1 byte (0=Position, 1=Velocity closed-loop, 2=Vel open-loop, 3=Step)
 
 # Bulk read: 0x38 to 0x42 inclusive = 11 bytes
 TELEMETRY_BULK_ADDR = 0x38
@@ -70,7 +71,7 @@ def read_register_bulk(ser, sid, addr, length):
     cmd[6] = length
     cmd[7] = P.calculate_checksum(cmd[2:7])
 
-    resp_len = length + 5  # header(2) + id(1) + len(1) + error(1) + data + checksum(1)
+    resp_len = length + 6  # header(2) + id(1) + len(1) + error(1) + data(length) + checksum(1)
     try:
         ser.reset_input_buffer()
         ser.write(cmd)
@@ -101,7 +102,7 @@ def read_telemetry_sample(ser, sid):
         return None
 
     pos = int.from_bytes(data[0:2], "little", signed=True)
-    speed = int.from_bytes(data[2:4], "little", signed=True)
+    speed_raw = int.from_bytes(data[2:4], "little", signed=False)
     load = int.from_bytes(data[4:6], "little", signed=False)
     voltage = data[6]
     temp = data[7]
@@ -109,9 +110,18 @@ def read_telemetry_sample(ser, sid):
     status = data[9]   # 0x41
     moving = data[10]  # 0x42
 
+    # 0x3A speed encoding (measured in Sprint 07 Part A):
+    #   bit 15 (0x8000) = direction flag: SET = decreasing counts (down),
+    #   low 15 bits = magnitude in ~counts/s (0.088 deg/s per LSB).
+    #   NOT two's-complement — mask, don't sign-extend.
+    speed_mag = speed_raw & 0x7FFF
+    speed_signed = -speed_mag if (speed_raw & 0x8000) else speed_mag
+
     return {
         "pos": pos,
-        "speed": speed,
+        "speed_raw": speed_raw,
+        "speed": speed_signed,
+        "speed_mag": speed_mag,
         "load": load,
         "voltage": voltage,
         "temp": temp,
@@ -150,11 +160,13 @@ def save_trace(filename, trace):
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["t_s", "pos", "speed", "load", "voltage", "temp", "status", "moving"])
+        w.writerow(["t_s", "pos", "speed_raw", "speed_mag", "speed", "load", "voltage", "temp", "status", "moving"])
         for t, s in trace:
             w.writerow([
                 f"{t:.6f}",
                 s["pos"],
+                s["speed_raw"],
+                s["speed_mag"],
                 s["speed"],
                 s["load"],
                 s["voltage"],

@@ -44,39 +44,44 @@ class TestServoDriver(unittest.TestCase):
         self.assertAlmostEqual(rad_val_pi_half_inv, math.pi / 2, places=2)
 
     @mock.patch('gradient_os.arm_controller.servo_protocol.sync_write_goal_pos_speed_accel')
-    def test_j1_gear_ratio(self, mock_sync_write: mock.Mock) -> None:
+    def test_j1_command_maps_to_physical(self, mock_sync_write: mock.Mock) -> None:
         """
-        Tests that a command to the logical Joint 1 results in a physical command
-        that is double the angle due to the 2:1 gear ratio.
+        Tests that a command to logical Joint 1 produces the expected physical
+        servo command under the current gradient0 robot model.
+
+        The gradient0 config has no software gear ratio on J1: the logical
+        angle maps 1:1 to the physical servo angle (see servo_driver.py
+        set_servo_positions — logical_to_physical_map with no scaling, and
+        robots/gradient0/config.py actuator_mapping_ranges_rad). The old
+        2:1 base-gear expectation was from the previous mini-arm model.
         """
         # Command J1 to PI/4 radians (45 degrees)
-        # The physical servos should be commanded to PI/2 radians (90 degrees)
         logical_angles = [math.pi / 4, 0, 0, 0, 0, 0]
-        
+
         servo_driver.set_servo_positions(logical_angles, 100, 0)
 
         # Get the arguments that sync_write was called with
         call_args = mock_sync_write.call_args[0][0]
-        
+
         # Find the command for the first servo of J1 (ID 10, index 0)
         servo_10_command = next((cmd for cmd in call_args if cmd[0] == 10), None)
         self.assertIsNotNone(servo_10_command)
-        
+
         # Convert the raw command back to radians to check it
         raw_pos_cmd = servo_10_command[1] # The position value
-        
+
         # Convert raw value back to physical radians
         # This uses the inverse logic of set_servo_positions
         is_direct = utils._is_servo_direct_mapping(0)
         normalized = raw_pos_cmd / 4095.0
         if not is_direct:
             normalized = 1.0 - normalized
-            
+
         min_rad, max_rad = utils.EFFECTIVE_MAPPING_RANGES[0]
         physical_angle_rad = normalized * (max_rad - min_rad) + min_rad
 
-        # The physical angle should be double the logical angle
-        self.assertAlmostEqual(physical_angle_rad, math.pi / 2, places=2)
+        # With no gear ratio, the physical angle equals the logical angle (1:1)
+        self.assertAlmostEqual(physical_angle_rad, math.pi / 4, places=2)
 
 
 if __name__ == '__main__':

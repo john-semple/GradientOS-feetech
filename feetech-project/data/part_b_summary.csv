@@ -1,0 +1,6 @@
+trial,classification,retarget_t,retarget_pos,retarget_speed,end_pos
+1,C,0.601,3765,-350,3388
+2,C,0.603,3763,-250,3387
+3,C,0.602,3763,-300,3386
+
+verdict,C

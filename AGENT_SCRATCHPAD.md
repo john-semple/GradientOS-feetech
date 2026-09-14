@@ -31,6 +31,29 @@ Use this file as persistent, repo-local execution memory.
 
 ## Session Entries
 
+### 2026-09-14 - Sprint 08b: Test infrastructure baseline (vitest + backend suite repair)
+
+- **Context**: Implemented Sprint 08b as prerequisite for Sprint 09 (GUI improvements). User runs servo bench tests directly over USB in parallel; verified the test work touches no serial/USB paths (frontend-only + fully-mocked pytest).
+- **Mistakes made (avoid repeating)**:
+  - Used `vi.stubGlobal` in apiMock.ts without importing `vi` — vitest config has `globals: false`, so the global `vi` doesn't exist. Always `import { vi } from "vitest"` in helper files.
+  - `vi.useFakeTimers()` + async fetch/userEvent deadlocked a 5s-timeout test. Don't enable fake timers unless the test specifically exercises timer-driven behavior (jog interval etc.); the smoke tests don't need them.
+  - Wrote a TelemetryCharts assertion on servo-id text ("10") — servo ids only render in SVG hover tooltips, not the DOM. Assert on section titles ("J1 (deg)", "Voltage (V)") instead. When writing DOM assertions, grep the component's JSX for what actually renders first.
+  - First DEVLOG edit consumed the following entry's header (`oldString` included the next header). When prepending entries, anchor on the *first line of the previous top entry* and re-add it in `newString`.
+- **Guardrails established**:
+  - Web-UI tests must import components directly, never via `App.tsx` (Three.js/WebGL chain crashes jsdom). Documented in web-ui/README.md + sprint doc.
+  - `src/test/setup.ts` must polyfill `ResizeObserver` before any TelemetryCharts test runs.
+  - Backend tests depend on `tests/conftest.py` to run the run_controller.py-style init (set_active_robot + set_active_backend + _populate_servo_constants). If that startup sequence changes, conftest must mirror it. Without it, `utils` constants are None → TypeError (the sprint-05 restructure made module constants None until init).
+  - The e2e test pins the legacy write path via `@patch(... _use_backend, return_value=False)` in both servo_driver and trajectory_execution — controller startup creates a real backend instance, and OL executor prefers `backend.sync_write()`. If the legacy servo_protocol path is ever removed, this test must be rewritten against the backend path.
+  - Mock-shape drift risk: `web-ui/src/test/apiMock.ts` and `tests/test_api_endpoints.py` encode the same FastAPI contract; change both together.
+- **Verified facts**:
+  - gradient0 has NO software 2:1 gear on J1 — logical→physical is 1:1 (servo_driver.py set_servo_positions + robots/gradient0/config.py). The old test_driver gear-ratio expectation was stale from the pre-gradient0 mini-arm.
+  - The 6 backend failures pre-dated this sprint (confirmed via `git stash` on pristine tree).
+  - Tailwind is a non-issue in vitest (`css: false`); don't spend time on CSS-transform config.
+- **Test gates for this repo** (run before considering frontend/backend work done):
+  - `npm run test:run` (web-ui) — 8 smoke tests
+  - `npm run build` (web-ui)
+  - `python -m pytest tests/` (repo root, venv active) — 31 passed, 1 skipped
+
 ### 2026-02-16 00:14 +11:00 - Sidebar UX refinement and workflow persistence
 
 #### Task Summary
@@ -2269,3 +2292,108 @@ Use this file as persistent, repo-local execution memory.
 - Part C accepts `--floor` from Part A's result; default is 3 if not provided.
 - All traces save to `feetech-project/data/part_{a,b,c}_traces/`. Summary CSVs save to `feetech-project/data/`.
 - After running, the operator should send the CSV traces for analysis. I can parse them and write the verdict + update `docs/jerkiness-diagnosis.md` §9.4-9.5.
+
+#### Sprint 07 Part A review + Part B prep (2026-09-14, session review)
+
+**Part A was run externally (user + GPT on the bench).** Data landed in `feetech-project/data/part_a_{traces,floor_probe,extended_slope}/`. Key measured facts to carry into all future STS3215 work:
+
+- **Speed command floor = cap 50** (~5 deg/s). Caps below 50 are all the same motion. Never command below 50.
+- **0.732 rpm/LSB is refuted** for direct goal→achieved-speed interpretation. Effective scale above the floor: ~0.09 deg/s per cap LSB (100→9, 200→17.2, 300→22.9 deg/s), mildly sub-linear.
+- **0x3A present-speed ≠ goal-cap units.** At cap 300, decoded 0x3A clusters 100-350 (mostly 300); floor moves decode to exactly 50. Downward = raw ≈ 32768−mag (two's-complement style); upward = raw mag directly. Decode: `raw>32767 ? 65536-raw : raw`.
+- **3 ms per serial transaction is a hard floor** (CH340 USB scheduling, not wire time). Bulk reads don't help beyond one transaction. Retry only after writes; reads are reliable.
+- **Goal write auto-enables torque** (0x28 0→1). Never write 0x28=1 directly at rest — goal reads 0 near position 4095 → instant full-range max-accel swing hazard. Always seed goal first.
+- **Accel 0x29=0 means MAXIMUM.** Bench recipe: write 10 before moving.
+- **Angle limits unrestricted (0/4095)** — software guardrails are the only protection.
+
+**Part B script issues found in review (fix before bench):**
+1. Script hardcodes start≈4016 → INITIAL_GOAL 3600 / RETARGET_GOAL 3400. Bench servo now sits at ~3895. Must parameterize from actual read position: e.g. start→start−296→start−516, or just `--start-goal`/`--retarget-goal` args.
+2. Classification uses 0x3A magnitudes with fixed thresholds (5, 20) — but decoded 0x3A at cap 300 clusters 100-350 and the noise floor at standstill is 0. Thresholds need recalibration: cruise detect via position delta (counts/sample ≈ 263 counts/s at cap 300 → ≥1 count/sample at ~300 Hz sample rate is safe), velocity-dip detect via decoded 0x3A dropping below ~50% of pre-retarget median.
+3. RETARGET_DELAY=0.8s at cap 300: 416-count first leg at ~263 counts/s takes ~1.6 s, so 0.8 s fires mid-cruise — OK. But verify with the new relative goals.
+4. Sample rate: bulk read ≈ 3 ms/txn → ~300 Hz achievable. Good for the ≥100 Hz requirement.
+5. bench_utils decode bug: read_telemetry_sample parses 0x3A as signed little-endian (32868 → −2868), but the traces show the user's runs decoded via two's-complement to 100. The signed parse happens to give the right magnitude after abs() only for raw values 32768..65535 — abs(−2868)=2868≠100. MUST fix decode to `raw>32767 ? 65536-raw : raw` before Part B, or Part B classification will misread every downward speed.
+
+**User wants to think through all options before Part B** — options on the table: (a) run Part B as written, (b) fix decode + parameterize first, (c) hybrid mode-switch probe (velocity mode cruise → position mode arrival) as an additional edge probe, (d) velocity-mode path discussed as long-term architecture. My recommendation: (b) is mandatory regardless; (c) is cheap to add and answers the hybrid question with the same bench session.
+
+#### 0x3A encoding CLOSED with Part A data (2026-09-14, no bench needed)
+
+**The 0x3A unit question is answered from existing Part A traces:**
+- **0x3A IS in the same units as the goal speed cap (0x2E)** — not a separate scale. Verified: cruise plateau decoded == commanded cap exactly (cap 100→decoded 100, 200→200, 300→300), across 528/286/124 samples.
+- **The LSB scale is ~0.088 deg/s per unit (both registers)**: position-timed slopes were −100.5/−199.4/−300.1 counts/s = −8.83/−17.53/−26.37 deg/s at decoded 100/200/300 → 0.0879 deg/s per LSB, consistent across all three caps and the floor (50→4.53 deg/s measured vs 4.40 predicted).
+- **So: cap LSB = 0x3A LSB ≈ 0.088 deg/s ≈ 0.0147 rpm/LSB.** The documented 0.732 rpm/LSB likely refers to the *motor shaft* before the ~50:1 gearbox (0.0147 × 50 ≈ 0.73). Mystery solved — both docs were "right", different shafts.
+- **Direction encoding on 0x3A: bit15 (0x8000) is the direction bit, low 15 bits are magnitude.** Downward = bit15 SET (raw 32868→100, 32968→200, 33068→300); upward = bit15 clear (raw 150 reads as 150). NOT two's-complement — mask with 0x7FFF. (A two's-complement parse gives −2868 for raw 32868: wrong magnitude AND wrong sign. bench_utils.py must fix this.)
+- **Upward moves are SLOWER than downward at the same cap**: returns (up, cap 500 commanded) plateaued at decoded 150 (12.77 deg/s) vs downward cap 300 → decoded 300 (26.37 deg/s). Gravity load on this joint? Or cap 500's return was actually run at a lower cap by the Part A script (check: return used speed=500 → decoded 150 ≈ 13.2 deg/s — the servo ran at ~⅓ of commanded cap upward). UNRESOLVED: is 150 an upward speed ceiling, or did the script set a different cap? Check part_a script's return code before Part B; do not assume symmetric caps up/down.
+
+**Consequences for Part B script fixes:**
+1. bench_utils.read_telemetry_sample: decode 0x3A as `(raw & 0x7FFF) * (1 if raw & 0x8000 else -1)`-style bit15 direction + low15 magnitude. (Sign convention: down = bit15 set. Confirm sign mapping in Part B trials.)
+2. Part B cruise detect: decoded 0x3A plateau == cap (verified exact equality in cruise) → `dec == cap` is a robust cruise detector at cap 300, simpler than position-delta.
+3. Classification thresholds now trivial: cruise = dec≈300; dip-to-zero = dec < 50 (floor); case C stop = dec hits 0 with pos at first goal.
+4. Part C quantitative: deg/s = dec × 0.088.
+
+#### Part B bench-day readiness (2026-09-14, pre-bench)
+
+**All Part A review fixes landed + hybrid probe added. Ready for bench.**
+- bench_utils 0x3A decode = bit15 dir + 0x7FFF mask (verified offline against raw trace values).
+- Part B goals relative: start-296 → start-516, works from ~3895 rest.
+- Classifier: A = speed_mag stays >50% cap across retarget; B = dips <50 (floor); C = speed 0 + pos ≤ first goal+10.
+- Hybrid probe order inside probe: mode→0 FIRST, seed goal at current pos, THEN final target. finally-block restores mode 0 on any exit.
+- Edge probe order: high-rate retarget → hybrid (Enter-gated) → reversal (Enter-gated).
+- OPEN RISK: velocity command sign convention unverified (negative = downward assumed from docs). First hybrid run: if wrong direction, power off, flip sign, retry once.
+- OPEN RISK: upward speed plateau ~150 at cap 500 unexplained — watch return_home durations.
+- Bench flow for user: run trials first (no --edges), review verdict, THEN --edges if A/B. Part C same session with --floor 50.
+
+#### PART B VERDICT: CASE A (2026-09-14 bench session)
+
+**CASE A CONFIRMED — velocity-continuous mid-move re-target blend, 3/3 trials.**
+This is the GO outcome for saturation streaming. Details:
+
+- Retarget at t≈0.60s, mid-cruise, speed_mag 300 → 300 across the rewrite (min 250 = quantization step). No stops. One continuous cruise through both goals.
+- **The auto-classifier LIED — it printed "C".** Root cause: `reached_initial_goal` checks `pos <= goal1 + 10` which is trivially true when goal2 is BELOW goal1 (servo passes through goal1 at cruise speed). Always classify from raw traces; treat script auto-verdicts as hints, not truth. Fix classifier before any rerun: case C must require a speed-zero window at/near goal1 (e.g. speed_mag < 10 sustained ≥0.1s while pos within ±10 of goal1), not mere passage.
+- **bench_utils.read_register_bulk had an off-by-one** (resp_len = length+5, needs +6 — the checksum byte). Symptom: 100% of telemetry reads return None while read_register_word works. Fixed 2026-09-14. Lesson: the first Part B "run" produced 0 samples and a plausible-looking UNKNOWN verdict — a silent failure mode. Always sanity-check sample count ≠ 0 before trusting a bench run.
+- 0x3A quantization: steps of 50 (observed 250/300/350). Ripple below 50 units is unmeasurable via 0x3A; use position-delta slope for fine ripple if ever needed.
+- Drift: -1..-2 counts per down-up cycle (backlash undershoot, consistent with Part A). Servo rest now ~3901.
+- **Sprint 07 status:** Part A done (LSB 0.088 deg/s, floor 50). Part B done (CASE A = GO). Remaining: Part C cap sweep (with --floor 50), edge probes (high-rate 100 Hz retarget now VERY interesting — case A predicts continuous cruise at stream rate; velocity-mode hybrid probe still worth one run as the interim-architecture comparison; reversal probe optional), verdict write-up + jerkiness-diagnosis.md §9.4 update.
+
+#### PART C + SPRINT 07 COMPLETE (2026-09-14 bench session)
+
+**Part C result (raw traces, auto-labels were false):** cap ≥ stream demand (~133 counts/s) → continuous cruise, error 1-2 counts (caps 4095/500/200/100 all CRUISE; cap 50 = firmware floor → LAG 38%). The "STOP-GO" auto-verdicts counted only the move's own start/stop decelerations. Regime boundary: cruise iff cap ≥ demand. Simple rule.
+
+**MY BUGS THIS SESSION (3 total — all bench-critical, all mine, all fixed):**
+1. `read_register_bulk` resp_len off-by-one (+5 vs +6) → 100% telemetry read failure, SILENT. First Part B run produced 0 samples + plausible UNKNOWN verdict.
+2. Part C `step_size` sign error → streamed goals UPWARD; servo tracked to the 4094 wraparound seam. The servo is never wrong — it obeys exactly. Safety contract is 100% on the sender: validate every streamed goal, not just endpoints. Added per-goal band guard.
+3. Both auto-classifiers produced false verdicts (Part B printed C, truth was A; Part C printed STOP-GO, truth was CRUISE). Root pattern: classifier heuristics that are trivially satisfied by normal trajectory structure. RULE: script verdicts are hints; raw traces are truth. Before trusting any bench verdict, spot-check the trace slices by hand.
+
+**Servo parked at 3892** (buggy run left it at 4092 — 4 counts from the wrap seam; re-parked via safe recipe).
+
+**SPRINT 07 FINAL RESULTS (all bench questions answered):**
+- Part A: 0x2E/0x3A same units, LSB ≈ 0.088 deg/s (output shaft; documented 0.732 rpm/LSB = motor shaft pre-gearbox ~50:1). Floor 50. 0x3A = bit15 direction + 0x7FFF magnitude, quantized in steps of 50.
+- Part B: CASE A — velocity-continuous blend on mid-cruise goal rewrites, 3/3 trials. Saturation streaming GO.
+- Part D: sinusoid (±31°, 0.15 Hz, 100 Hz stream): smooth in BOTH legacy (4095/0) and profiled (850/10) settings; user visual: both smooth, profiled slightly smoother. All stops are the sine's own zero-velocity extremes. Production jerkiness root cause is the EXECUTORS' SEGMENT STRUCTURE (arrive-and-stop micro-waypoints), not the caps.
+- Part C: cruise iff cap ≥ stream demand; below → lag. No stop-go at any cap when the goal stream is smooth+dense.
+- IMPLICATIONS for production streaming implementation: (1) stream dense smooth goals, never sparse corners; (2) cap ≈ 1.5-2.5x expected segment velocity demand; (3) accel 10; (4) no need for velocity-mode hybrid as interim — position-mode streaming works once executors feed it smooth goals. Hybrid probe never ran (superseded by results — position streaming already achieves the goal).
+- REMAINING: verdict write-up, jerkiness-diagnosis.md §9.4/9.5 update, sprint-07 checkbox file update, scratchpad sweep. All desk work.
+
+#### Velocity estimation note (2026-09-14, from Sprint 07 data)
+
+**Position differencing at 100 Hz — the recommended velocity estimator for STS3215.**
+- 0x3A quantizes in steps of 50 LSB (~4.4 deg/s) — too coarse for closed-loop correction.
+- Position differencing resolution is set by the window: noise floor = 1 count / window.
+  - adjacent samples (10 ms): ~8.8 deg/s resolution (coarse, noisy)
+  - 50 ms window (5 samples): ~1.8 deg/s resolution — recommended default
+  - 100 ms window: ~0.9 deg/s but adds ~50 ms lag to the estimate
+- Zero added latency IF position is already being read (the 11-byte bulk read includes 0x38; differencing is pure software on data in hand). No extra bus traffic.
+- Implementation: rolling deque of (t, pos), slope over last ~5 samples, in servo_driver as a get_velocity() helper. Few lines.
+- Use for: damped stream correction, monitoring. NOT needed for streaming itself (open-loop setpoint stream doesn't require velocity feedback).
+
+**Cap policy (simple form for future docs):** the 0x2E cap is a speed CEILING, not a target. Set it ~2x the fastest the motion should ever go. The goal stream steers; the cap bounds. Too low → servo lags the stream (Part C, cap 50). Too high → no bound on a bad goal (production today, 4095). 2x demand = tracking headroom + safety ceiling in one number.
+
+**Backend wrapping conclusion:** smooth-streaming recipe CAN be wrapped in the backend behind a capability flag (Sprint 04 pattern): executor hands backend a timed (t, position) path; backend-owned 100 Hz pacing thread streams it with 50 ms lookahead + per-segment cap sizing + accel 10. Planner/app untouched above the handoff. Design requirement: backend stream thread needs a watchdog (stop + hold-position if the app stops refreshing the path) — copy the jog loop's timeout-zeroing pattern. One architectural decision: timing ownership moves into the backend.
+
+**Watchdog correction (user challenged it, 2026-09-14):** for POSITION-mode streaming, a watchdog is NOT a design requirement. Structural fail-safes: (1) servo stops at last written goal on stream interruption — with 50 ms lookahead that is ~50-100 ms of travel, by physics not by timer; (2) sliding-horizon path handoff (~200-300 ms of future) bounds any app hang to horizon-time of motion. Keep only as one line in the pacing loop ("stop writing when t > path_end") for buffer-replay bug containment. Watchdog becomes MANDATORY only if velocity mode is ever introduced (comms loss = continued rotation — different hazard class). Original watchdog note was velocity-mode thinking applied to position mode.
+
+#### Sprint 10 + 11 authored (2026-09-14)
+
+- Sprint 10 = backend-wrapped Case A streaming. Key design points baked in: capability flag pattern (4th use of it — Sprint 04 precedent), timing ownership moves into backend, no watchdog (horizon expiry + physics), per-goal stream clamp from my Part C sign-error lesson, HLS excluded until it gets its own fork test.
+- Sprint 11 = hypothetical, explicitly labeled. The important structural choice: Part A IS the algorithm work (obstacle contract, policy bake-off with sim evidence, prediction decision, integration design, GO/park gate) — no implementation debt before the algorithm is proven on paper/sim. Synthetic obstacle producer decouples motion work from camera availability.
+- Cross-sprint dependency: `replace_remaining_path` on the streaming handle is specced in 11 but noted as buildable in 10.
+- TODO.md updated: sprint-07 open questions resolved; post-07 sprint table added. Numbering continues at 10 (no renumbering — session lesson held).
+- STILL PENDING (desk work, no bench): diagnosis §9.4/9.5 update with measured results, sprint-07 checkbox file update, decision log entries. These are prerequisites for Sprint 10 implementation start but not for its design review.

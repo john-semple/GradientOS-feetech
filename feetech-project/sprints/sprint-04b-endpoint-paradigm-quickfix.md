@@ -1,4 +1,4 @@
-# Sprint 04 — Quick Fix: Endpoint-Paradigm Motion (Feetech-Scoped)
+# Sprint 04b — Quick Fix: Endpoint-Paradigm Motion (Feetech-Scoped)
 
 ## Goal
 
@@ -35,7 +35,7 @@ Full theory: `GradientOS/docs/jerkiness-diagnosis.md` (sections 8 and 10).
 
 ## Prerequisites
 
-- STS3215 protocol validated ✅ (sprint-01-sts3215-protocol.md, marked complete)
+- STS3215 protocol validated ✅ (archive/sprint-01-sts3215-protocol-COMPLETE.md, marked complete)
 - Sprint 07 Part A speed-unit calibration **recommended first** (caps sized in rad/s need
   the LSB conversion) — but a flat conservative cap (e.g. 500/accel 10) can ship first
   and be refined when calibration lands

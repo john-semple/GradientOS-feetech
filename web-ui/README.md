@@ -28,6 +28,34 @@ npm install
 - `npm run dev` - start Vite dev server (default port `8000`)
 - `npm run build` - production build
 - `npm run preview` - serve the production build locally
+- `npm run test` - vitest in watch mode
+- `npm run test:run` - vitest single run (use this for verification/CI)
+
+## Testing
+
+The web UI test suite lives in `src/test/` and uses vitest + @testing-library/react
+with a jsdom environment.
+
+```bash
+npm run test:run
+```
+
+Current scope: smoke tests for DOM-based components (`ControlPanel`,
+`SidebarDrawer`, `TelemetryCharts`). New screens should add a test file there.
+
+Patterns to follow:
+
+- **Import components directly** (e.g. `from "../ControlPanel"`), never via
+  `App.tsx` — App pulls in Three.js/WebGL via ArmVisualizer, which jsdom cannot
+  run. There is no App-level test for this reason.
+- **Mock fetch** with `installFetchMock()` from `src/test/apiMock.ts`. Its
+  response shapes mirror the real FastAPI responses (the same contract asserted
+  in `tests/test_api_endpoints.py` in the repo root). When a new endpoint test
+  shape is added backend-side, update `apiMock.ts` to match.
+- `src/test/setup.ts` polyfills `ResizeObserver` (jsdom does not implement it;
+  `TelemetryCharts` instantiates one on mount) and registers jest-dom matchers.
+- Tailwind styling is not processed in tests (vitest `css: false`); assert on
+  roles, text, and behavior — not on classes.
 
 ## Run (Local)
 

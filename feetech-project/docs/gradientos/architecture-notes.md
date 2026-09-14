@@ -1,6 +1,6 @@
 # GradientOS Architecture Notes
 
-> This file is a stub. It will be filled in during Phase 3 (sprint-02-gradientos-study.md) after cloning and studying the GradientOS codebase.
+> This file is a stub. It will be filled in during Phase 3 (archive/sprint-02-gradientos-study-COMPLETE.md) after cloning and studying the GradientOS codebase.
 
 ## Overview
 

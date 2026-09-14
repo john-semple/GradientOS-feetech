@@ -6,7 +6,7 @@ Add a software layer that maps one logical joint to two physical actuators with 
 
 ## Prerequisites
 
-- STS3215 backend working (archived: archive/sprint-04-sts-backend-COMPLETE.md); HLS backend (sprint-03) if the arm uses HLS servos
+- STS3215 backend working (archived: archive/sprint-04-sts-backend-COMPLETE.md); HLS backend (sprint-05-hls3950.md) if the arm uses HLS servos
 - Understanding of GradientOS's joint model (from the GradientOS study sprint)
 
 ## Background
@@ -50,4 +50,4 @@ J2 and J3 each have two servos driving the same joint output. By driving them wi
 - Start with a very small offset (0.5-1 degree) to avoid over-stressing the servos.
 - The offset direction matters — it should preload the gear mesh in the normal load direction.
 - This is a software-only change — no hardware modifications to the servo pairing.
-- If GradientOS's joint model can't be extended easily, this may require deeper changes. Assess in the GradientOS architecture crash course first (sprint-02-gradientos-study.md §5, twin-motor mapping).
+- If GradientOS's joint model can't be extended easily, this may require deeper changes. Assess in the GradientOS architecture crash course first (archive/sprint-02-gradientos-study-COMPLETE.md §5, twin-motor mapping).

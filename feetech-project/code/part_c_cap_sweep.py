@@ -56,8 +56,12 @@ STREAM_RATE_HZ = 100
 STREAM_INTERVAL = 1.0 / STREAM_RATE_HZ
 TOTAL_MOVE_COUNTS = 400  # ~35° downward
 CAPTURE_DURATION = 5.0   # seconds per cap run
-DEFAULT_CAPS = [4095, 500, 100, 30, 10]
-DEFAULT_FLOOR = 3
+DEFAULT_CAPS = [4095, 500, 200, 100, 50]
+DEFAULT_FLOOR = 50  # measured in Part A: caps below 50 all run at the same ~50-LSB floor
+
+# Measured in Part A: 0x3A decoded == commanded cap during cruise; LSB ≈ 0.088 deg/s;
+# speed quantizes in steps of 50. Regime thresholds calibrated to that scale.
+SPEED_FLOOR = 50
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "part_c_traces")
 SUMMARY_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "part_c_summary.csv")
@@ -84,13 +88,11 @@ def run_streamed_move(ser, sid, cap, total_move=TOTAL_MOVE_COUNTS):
     safe_setup(ser, sid, accel=ACCEL, speed=cap)
     seed_goal(ser, sid, start_pos)
 
-    # Linear interpolation: goal steps down evenly across the stream duration
-    # We stream for CAPTURE_DURATION seconds, but the move should complete
-    # within that window.  Interpolate goal from start_pos to final_target
-    # across ~3 seconds (leaves 2s buffer).
+    # Linear interpolation: goal steps down evenly across the stream duration.
+    # DOWNWARD move: step_size is NEGATIVE (toward lower counts).
     stream_duration = 3.0
     n_steps = int(stream_duration * STREAM_RATE_HZ)
-    step_size = total_move / n_steps  # counts per step (negative = downward)
+    step_size = -total_move / n_steps  # counts per step (negative = downward)
 
     # Start streaming
     t0 = time.perf_counter()
@@ -113,6 +115,12 @@ def run_streamed_move(ser, sid, cap, total_move=TOTAL_MOVE_COUNTS):
             if t >= expected_t:
                 goal = int(start_pos + step_size * step_idx)
                 goal = max(goal, final_target)
+                # Per-goal guardrail: every streamed goal must stay inside the
+                # safe band [final_target, start_pos]. Never command above start.
+                if goal > start_pos or goal < final_target:
+                    print(f"    !! STREAM GOAL OUT OF BAND: {goal} "
+                          f"(band {final_target}..{start_pos}) — clamping")
+                    goal = max(final_target, min(start_pos, goal))
                 P.write_register_word(ser, sid, REG_TARGET_POSITION, goal)
                 step_idx += 1
         else:
@@ -166,10 +174,11 @@ def classify_regime(result):
     if len(moving_samples) < 5:
         return "UNKNOWN", f"Only {len(moving_samples)} moving samples"
 
-    speeds = [abs(s["speed"]) for t, s in moving_samples]
+    speeds = [s["speed_mag"] for t, s in moving_samples]
 
-    # Zero-crossings: speed drops below threshold
-    threshold = 5  # raw speed units
+    # Zero-crossings: speed drops below the measured quantization floor.
+    # (0x3A steps in 50s — anything below SPEED_FLOOR reads as a near-stop.)
+    threshold = SPEED_FLOOR
     zero_crossings = 0
     prev_above = speeds[0] >= threshold if speeds else False
     for s in speeds[1:]:

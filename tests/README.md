@@ -24,6 +24,46 @@ python -m pytest tests/
 
 Pytest will automatically discover and run all test files (files named `test_*.py` or `*_test.py`) within the `tests/` directory and its subdirectories.
 
+### Web UI tests
+
+The web UI has its own vitest suite (see `web-ui/src/test/`). Run it from `web-ui/`:
+
+```bash
+npm run test        # watch mode
+npm run test:run    # single run (CI-style)
+```
+
+### Test session initialization (conftest.py)
+
+`tests/conftest.py` runs once per pytest session and performs the same
+startup initialization that `run_controller.py` does at boot (no hardware):
+
+1. `get_robot_config("gradient0")` + `robot_config.set_active_robot(...)` — populates robot constants (`SERVO_IDS`, mapping ranges, joint limits, ...)
+2. `backend_registry.set_active_backend("sts3215")` + `utils._populate_servo_constants()` — populates protocol constants (`SYNC_WRITE_START_ADDRESS`, instruction codes, ...)
+
+Without this, module-level constants in `utils.py` are `None` and tests fail
+with `TypeError`. Any new test file that imports servo/driver/protocol modules
+gets this initialization automatically; do not re-initialize per-test.
+
+### Adding new API endpoint tests (the canonical pattern)
+
+New FastAPI endpoint tests should extend `tests/test_api_endpoints.py`,
+which uses the `patch_send` context manager (lines 14-153) to stub the
+UDP controller interface:
+
+- Mock `_send_controller_command` with canned UDP replies (the strings the
+  controller actually returns, e.g. `"CURRENT_POSE,..."`)
+- Mock `_probe_controller` to report the controller as available
+- Mock `controller_command_api` and `topology_service` where the endpoint
+  uses them
+- Assert on the FastAPI response JSON **and** the UDP command strings that
+  were sent (`client.command_calls`)
+
+This tests the real API contract (request → UDP command string → response
+shape) without hardware. The web UI's fetch mock (`web-ui/src/test/apiMock.ts`)
+mirrors the same response shapes — when you add an endpoint test here, keep
+the corresponding mock shape in `apiMock.ts` in sync.
+
 ## Test Descriptions
 
 -   `test_protocol.py`: Contains low-level unit tests for the `servo_protocol.py` module. It verifies the correctness of fundamental operations like checksum calculation and the byte-level structure of `SYNC_WRITE` packets, ensuring that communication with the servos is formatted correctly.

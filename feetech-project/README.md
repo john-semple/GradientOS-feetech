@@ -86,16 +86,20 @@ GradientOS/                         ← this fork (john-semple/GradientOS-feetec
       decisions/
         decision-log.md             # ADR-style dated decisions + rationale
     sprints/
-      sprint-00-setup.md
-      sprint-01-sts3215-protocol.md   # complete, in place
-      sprint-02-gradientos-study.md
-      sprint-03-electronics.md
-      sprint-04-endpoint-paradigm-quickfix.md
+      sprint-04b-endpoint-paradigm-quickfix.md
       sprint-05-hls3950.md
       sprint-06-paired-joints.md
       sprint-07-pseudo-dynamixel-feasibility.md
       sprint-08-full-arm-hardening.md
+      sprint-08b-test-infrastructure.md
+      sprint-09-gui-improvements.md
+      sprint-10-smooth-streaming-executor.md
+      sprint-11-reactive-motion.md
       archive/
+        sprint-00-setup-COMPLETE.md
+        sprint-01-sts3215-protocol-COMPLETE.md
+        sprint-02-gradientos-study-COMPLETE.md
+        sprint-03-electronics-COMPLETE.md
         sprint-04-sts-backend-COMPLETE.md
     code/                           # bench validation scripts (hello_world, coordinated_home, telemetry)
   src/gradient_os/arm_controller/backends/sts3215/  ← existing GradientOS Feetech stub

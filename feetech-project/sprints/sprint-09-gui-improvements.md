@@ -15,8 +15,10 @@ adds RC-controller / gamepad input as an alternative jog method.
 
 ## Prerequisites
 
+- Sprint 08b (Test Infrastructure Baseline) complete — new UI screens get tests
+  written alongside them using the vitest + API-mock patterns established there
 - Web UI running (`./run-web.sh`) with API + controller online ✅ (existing)
-- Sprint 04 (endpoint-paradigm quick fix) complete ✅ — jog velocity path works
+- Sprint 04b (endpoint-paradigm quick fix) complete ✅ — jog velocity path works
 - Sprint 08 (full-arm hardening) recommended first or consciously deferred —
   calibrating joint limits is safer on a hardened power bus, but the calibration UI
   can be built and tested independently on the bench arm

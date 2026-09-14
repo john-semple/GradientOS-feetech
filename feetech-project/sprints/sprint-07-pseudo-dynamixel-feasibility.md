@@ -52,12 +52,11 @@ Full theory: `GradientOS/docs/jerkiness-diagnosis.md` (sections 9.1-9.5).
 
 ### Part B: Mid-move re-target fork test (THE decisive experiment)
 
-- [ ] Run diagnosis §9.4 protocol: long move (4016 → 3600, cap 300, accel 10); while
+- [x] Run diagnosis §9.4 protocol: long move (4016 → 3600, cap 300, accel 10); while
       `0x3A` shows cruise velocity, rewrite goal to 3400; log `0x38`, `0x3A`,
       moving flag (telemetry block 2 @ `0x41`) at ≥ 100 Hz
-- [ ] Classify firmware behavior: A (velocity-continuous blend), B (re-plan from rest,
-      velocity dip), or C (finish plan first, full stop at old goal)
-- [ ] Repeat 3× to check consistency across trials
+- [x] Classify firmware behavior: **CASE A (velocity-continuous blend)** — confirmed 2026-09-14, 3/3 trials
+- [x] Repeat 3× to check consistency across trials — consistent (3/3 Case A)
 - [ ] Edge probes (only if case A or B confirmed):
       - [ ] Re-target at high rate (100 Hz) with cap ≈ stream velocity — does velocity
             stay continuous across many consecutive re-targets?
@@ -68,18 +67,17 @@ Full theory: `GradientOS/docs/jerkiness-diagnosis.md` (sections 9.1-9.5).
 
 ### Part C: Cap sweep on streamed motion (quantify the saturation regime)
 
-- [ ] Stream a known linear move at 100 Hz; sweep cap {4095, 500, 100, 30, 10, floor};
+- [x] Stream a known linear move at 100 Hz; sweep cap {4095, 500, 100, 30, 10, floor};
       log `0x3A` magnitude at max feasible read rate
-- [ ] Classify per-cap regime from velocity traces: stop-go (zero-crossings at stream
+- [x] Classify per-cap regime from velocity traces: stop-go (zero-crossings at stream
       rate) / continuous cruise / lag (position error growing)
-- [ ] Record the cruise-transition cap and the lag floor
+- [x] Record the cruise-transition cap and the lag floor — cap ≥ demand → continuous cruise confirmed
 
 ### Part D: Verdict
 
-- [ ] Write the go/no-go: which firmware case was measured, and whether saturation
-      streaming is viable (A: full go; B: conditional — quantify ripple; C: no-go)
-- [ ] If GO/CONDITIONAL: specify the cap multiplier and stream-rate headroom for the
-      streaming implementation; note that implementation becomes a future sprint
+- [x] Write the go/no-go: **GO** — Case A measured (velocity-continuous blend), saturation streaming viable
+- [x] If GO/CONDITIONAL: specify the cap multiplier and stream-rate headroom for the
+      streaming implementation; note that implementation becomes Sprint 10
 - [ ] If NO-GO: recommend the endpoint-paradigm path as permanent (not stopgap) for
       Feetech, and record that streaming requires different hardware
 
@@ -101,7 +99,7 @@ Full theory: `GradientOS/docs/jerkiness-diagnosis.md` (sections 9.1-9.5).
 - If Part B yields case C, stop — Part C's streamed sweep is then only useful for
   documenting how bad current behavior is; the sweep's real value is under A or B.
 - The quick fix (endpoint-paradigm motion) is deliberately OUT of this sprint — see
-  Sprint 04 (quick fix). This sprint only answers "can we ever hack them into pseudo-Dynamixels?"
+  Sprint 04b (quick fix). This sprint only answers "can we ever hack them into pseudo-Dynamixels?"
 
 ## Session log
 

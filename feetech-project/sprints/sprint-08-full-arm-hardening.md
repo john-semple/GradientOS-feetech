@@ -27,7 +27,7 @@ power distribution, stable USB naming, verified joint limits, and operator docum
 
 - The physical arm (present, running) ✅
 - Sprint 06 (paired joints) complete or consciously deferred
-- Sprint 04 (endpoint-paradigm quick fix) recommended first — hardening motion before
+- Sprint 04b (endpoint-paradigm quick fix) recommended first — hardening motion before
   hardening wiring avoids debugging two variables at once
 
 ## Tasks

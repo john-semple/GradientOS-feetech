@@ -35,7 +35,15 @@ class TestEndToEnd(unittest.TestCase):
     @patch('gradient_os.arm_controller.servo_driver.servo_protocol.sync_read_positions')
     @patch('gradient_os.ik_solver.solve_ik_path_batch')
     @patch('gradient_os.arm_controller.servo_driver.serial.Serial')
+    # Force the legacy servo_protocol write path: the controller startup now
+    # creates a real backend instance against the mocked serial port, and the
+    # open-loop executor prefers backend.sync_write() when one is active.
+    # This test asserts the legacy UDP -> servo_protocol -> serial bytes path.
+    @patch('gradient_os.arm_controller.trajectory_execution._use_backend', return_value=False)
+    @patch('gradient_os.arm_controller.servo_driver._use_backend', return_value=False)
     def test_move_line_command_to_serial_output(self,
+                                                _mock_driver_use_backend: MagicMock,
+                                                _mock_traj_use_backend: MagicMock,
                                                 mock_serial_class: MagicMock,
                                                 mock_solve_ik: MagicMock,
                                                 mock_sync_read: MagicMock,

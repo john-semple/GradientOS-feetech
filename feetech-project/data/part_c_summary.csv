@@ -1,0 +1,10 @@
+cap,regime,pos_error,description
+4095,STOP-GO,2,"Intermittent: avg=127, min=0, zero-crossings=1. Likely stop-go."
+500,STOP-GO,2,"Intermittent: avg=126, min=0, zero-crossings=3. Likely stop-go."
+200,STOP-GO,1,"Intermittent: avg=127, min=0, zero-crossings=1. Likely stop-go."
+100,STOP-GO,2,"Intermittent: avg=97, min=0, zero-crossings=3. Likely stop-go."
+50,LAG,152,"Large position error: 152 counts (13.4°, 38% undershoot). Servo can't keep up at cap=50."
+50,LAG,153,"Large position error: 153 counts (13.4°, 38% undershoot). Servo can't keep up at cap=50."
+
+cruise_transition_cap,
+lag_floor_cap,50
