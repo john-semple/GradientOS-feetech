@@ -16,16 +16,16 @@
 #
 # For new robot integrations:
 # 1. Create a new robot config in robots/ (inherit from RobotConfig)
-# 2. Use the appropriate actuator backend (e.g., FeetechBackend)
+# 2. Use the appropriate actuator backend (e.g., STS3215Backend)
 # 3. Initialize with your robot's configuration
 #
 # Example:
 # ```python
-# from gradient_os.arm_controller import FeetechBackend
+# from gradient_os.arm_controller import STS3215Backend
 # from gradient_os.arm_controller.robots import Gradient0Config
 #
 # robot = Gradient0Config()
-# backend = FeetechBackend(robot)
+# backend = STS3215Backend(robot)
 # backend.initialize()
 # backend.set_joint_positions([0, 0, 0, 0, 0, 0], speed=500, acceleration=100)
 # ```
@@ -34,7 +34,7 @@
 from .actuator_interface import ActuatorBackend, SimulationBackend
 
 # Import backends
-from .backends import FeetechBackend
+from .backends import STS3215Backend
 
 # Import robot configuration classes
 from .robots import RobotConfig, Gradient0Config, get_robot_config, list_available_robots
@@ -54,7 +54,7 @@ __all__ = [
     'ActuatorBackend',
     'SimulationBackend',
     # Backends
-    'FeetechBackend',
+    'STS3215Backend',
     # Robot Configuration
     'RobotConfig',
     'Gradient0Config',

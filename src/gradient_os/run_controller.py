@@ -5,7 +5,7 @@
 # --------------
 # The robot and servo backend are configured via command-line arguments:
 #   --robot: Which robot configuration to use (e.g., "gradient0")
-#   --servo-backend: Which servo backend to use (e.g., "feetech")
+#   --servo-backend: Which servo backend to use (e.g., "sts3215", "hls3950")
 #
 # This allows the frontend to expose robot/servo selection and makes the
 # configuration explicit at startup rather than buried in code.
@@ -73,7 +73,7 @@ Available robots: {', '.join(available_robots)}
 Available servo backends: {', '.join(AVAILABLE_SERVO_BACKENDS)}
 
 Examples:
-  python -m gradient_os.run_controller --robot gradient0 --servo-backend feetech
+  python -m gradient_os.run_controller --robot gradient0 --servo-backend sts3215
   python -m gradient_os.run_controller --robot gradient0 --sim
         """
     )
@@ -163,7 +163,7 @@ Examples:
     
     # Set active backend CONFIG (loads constants like encoder resolution, register addresses)
     # Note: For simulation, we still use feetech config since it doesn't have its own
-    config_backend = servo_backend if servo_backend != "simulation" else "feetech"
+    config_backend = servo_backend if servo_backend != "simulation" else "sts3215"
     backend_registry.set_active_backend(config_backend)
     
     # Populate utils with servo-specific constants from the active backend
@@ -237,7 +237,7 @@ Examples:
         # Initialize the hardware using legacy servo_driver
         servo_driver.initialize_servos()
         # Angle limit writes are serial-servo specific (EEPROM registers). Skip for non-serial backends.
-        if servo_backend == "feetech":
+        if servo_backend in ("sts3215", "hls3950"):
             servo_driver.set_servo_angle_limits_from_urdf()
         else:
             print(f"[Controller] Skipping URDF angle limit writes for backend: {servo_backend}")

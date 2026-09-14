@@ -1,7 +1,7 @@
-# backends/feetech/driver.py
+# backends/hls3950/driver.py
 #
-# Feetech servo backend implementation for GradientOS.
-# This class implements the ActuatorBackend interface for Feetech STS/SCS servos.
+# Feetech HLS3950 servo backend implementation for GradientOS.
+# This class implements the ActuatorBackend interface for Feetech HLS3950 servos.
 #
 # The driver handles:
 # - Serial port management and auto-detection
@@ -24,13 +24,13 @@ from . import config
 from . import protocol
 
 
-class FeetechBackend(ActuatorBackend):
+class HLS3950Backend(ActuatorBackend):
     """
-    Feetech STS/SCS series servo backend for GradientOS.
+    Feetech HLS3950 servo backend for GradientOS.
     
-    This class provides hardware control for Feetech serial bus servos.
-    It implements the ActuatorBackend interface, allowing GradientOS to
-    use Feetech servos for robot control.
+    This class provides hardware control for Feetech STS3215 serial bus servos
+    using the SCS/STS protocol.  It implements the ActuatorBackend interface,
+    allowing GradientOS to use STS3215 servos for robot control.
     
     Configuration is provided at initialization time, making this class
     reusable for different robot configurations.
@@ -57,7 +57,7 @@ class FeetechBackend(ActuatorBackend):
         'gripper_servo_id': 100,  # Optional
     }
     
-    backend = FeetechBackend(robot_config)
+    backend = HLS3950Backend(robot_config)
     backend.initialize()
     ```
     """
@@ -69,7 +69,7 @@ class FeetechBackend(ActuatorBackend):
         baud_rate: int = config.DEFAULT_BAUD_RATE,
     ):
         """
-        Initialize the Feetech backend with robot configuration.
+        Initialize the HLS3950 backend with robot configuration.
         
         Args:
             robot_config: Dictionary containing robot-specific configuration:
@@ -150,15 +150,35 @@ class FeetechBackend(ActuatorBackend):
     @property
     def encoder_resolution(self) -> int:
         """
-        Returns the encoder resolution for Feetech STS/SCS servos.
+        Returns the encoder resolution for Feetech HLS3950 servos.
         
-        Feetech STS3215 and similar servos use 12-bit encoders with
+        Feetech HLS3950 servos use 12-bit encoders with
         a maximum value of 4095.
         
         Returns:
             int: 4095 (12-bit encoder max value)
         """
         return 4095
+    
+    @property
+    def supports_profiled_segments(self) -> bool:
+        """
+        Feetech HLS3950 servos have an internal trapezoidal profiler.
+        
+        When True, the trajectory executor collapses dense waypoint streams
+        into ONE goal command per segment (endpoint position + moderate
+        speed/accel caps), letting the firmware profile the whole move — the
+        "Home-button" pattern generalised to all moves.  This eliminates the
+        stop-go backlash oscillation caused by streaming 50-100 goals/sec
+        with speed=4095, accel=0.
+        
+        See: docs/jerkiness-diagnosis.md §10
+             feetech-project/sprints/sprint-04-endpoint-paradigm-quickfix.md
+        
+        Returns:
+            bool: True — profiled-segment motion is supported and desired.
+        """
+        return True
     
     def set_alert_callback(self, callback: Callable) -> None:
         """
@@ -175,7 +195,7 @@ class FeetechBackend(ActuatorBackend):
     
     def initialize(self) -> bool:
         """
-        Initialize the Feetech servo system.
+        Initialize the HLS3950 servo system.
         
         This method:
         1. Opens the serial port (with auto-detection if needed)
@@ -185,7 +205,7 @@ class FeetechBackend(ActuatorBackend):
         Returns:
             bool: True if initialization was successful.
         """
-        print("[Feetech] Initializing servo backend...")
+        print("[HLS3950] Initializing servo backend...")
         
         # Clear protocol-level cache
         protocol.clear_present_servo_ids()
@@ -193,18 +213,18 @@ class FeetechBackend(ActuatorBackend):
         # Resolve and open serial port
         resolved_port = self._resolve_serial_port()
         if not resolved_port:
-            print("[Feetech] ERROR: Could not find a valid serial port.")
+            print("[HLS3950] ERROR: Could not find a valid serial port.")
             return False
         
         try:
             self._ser = serial.Serial(resolved_port, self._baud_rate, timeout=0.1)
-            print(f"[Feetech] Serial port {resolved_port} opened at {self._baud_rate} baud.")
+            print(f"[HLS3950] Serial port {resolved_port} opened at {self._baud_rate} baud.")
         except serial.SerialException as e:
-            print(f"[Feetech] ERROR: Could not open serial port {resolved_port}: {e}")
+            print(f"[HLS3950] ERROR: Could not open serial port {resolved_port}: {e}")
             return False
         
         # Ping all configured servos
-        print("[Feetech] Pinging configured servos...")
+        print("[HLS3950] Pinging configured servos...")
         all_servo_ids = list(self._servo_ids)
         if self._gripper_servo_id and self._gripper_servo_id not in all_servo_ids:
             all_servo_ids.append(self._gripper_servo_id)
@@ -212,17 +232,17 @@ class FeetechBackend(ActuatorBackend):
         for servo_id in all_servo_ids:
             if protocol.ping(self._ser, servo_id):
                 self._present_servo_ids.add(servo_id)
-                print(f"[Feetech]   - Servo {servo_id}: PRESENT")
+                print(f"[HLS3950]   - Servo {servo_id}: PRESENT")
             else:
-                print(f"[Feetech]   - Servo {servo_id}: ABSENT")
+                print(f"[HLS3950]   - Servo {servo_id}: ABSENT")
         
         # Check gripper presence
         if self._gripper_servo_id and self._gripper_servo_id in self._present_servo_ids:
             self._gripper_present = True
-            print(f"[Feetech] Gripper (ID {self._gripper_servo_id}) is present.")
+            print(f"[HLS3950] Gripper (ID {self._gripper_servo_id}) is present.")
         
         # Set PID gains for present servos
-        print("[Feetech] Setting PID gains for present servos...")
+        print("[HLS3950] Setting PID gains for present servos...")
         for servo_id in self._present_servo_ids:
             kp, ki, kd = self._default_pid_gains.get(
                 servo_id, 
@@ -232,14 +252,14 @@ class FeetechBackend(ActuatorBackend):
             time.sleep(0.02)
         
         self._initialized = True
-        print("[Feetech] Backend initialization complete.")
+        print("[HLS3950] Backend initialization complete.")
         return True
     
     def shutdown(self) -> None:
         """Close the serial port and clean up."""
         if self._ser and self._ser.is_open:
             self._ser.close()
-            print("[Feetech] Serial port closed.")
+            print("[HLS3950] Serial port closed.")
         self._initialized = False
         self._present_servo_ids = set()
     
@@ -262,7 +282,7 @@ class FeetechBackend(ActuatorBackend):
             acceleration: Acceleration in deg/s² (converted to register value).
         """
         if not self._initialized:
-            print("[Feetech] ERROR: Backend not initialized.")
+            print("[HLS3950] ERROR: Backend not initialized.")
             return
         
         if len(positions_rad) != self.num_joints:
@@ -315,7 +335,7 @@ class FeetechBackend(ActuatorBackend):
         
         if verbose:
             angles_deg = np.rad2deg(positions)
-            print(f"[Feetech] Current positions (deg): {np.round(angles_deg, 2)}")
+            print(f"[HLS3950] Current positions (deg): {np.round(angles_deg, 2)}")
         
         return positions
     
@@ -364,6 +384,127 @@ class FeetechBackend(ActuatorBackend):
         if not self._initialized or not commands:
             return
         protocol.sync_write_goal_pos_speed_accel(self._ser, commands)
+    
+    # =========================================================================
+    # Profiled-Segment Helper (Sprint 04 — endpoint-paradigm quick fix)
+    # =========================================================================
+    
+    def plan_profiled_segment(
+        self,
+        start_q: list[float],
+        end_q: list[float],
+        per_joint_velocities: Optional[list[float]] = None,
+        flat_speed: Optional[int] = None,
+    ) -> list[tuple[int, int, int, int]]:
+        """
+        Plan a single profiled-segment goal command for all logical joints.
+        
+        Computes ONE sync_write command list (endpoint position + per-joint
+        speed cap + fixed moderate accel) that lets the Feetech firmware's
+        internal trapezoidal profiler run the whole segment.  This is the
+        "Home-button" pattern generalised to every move — eliminates the
+        stop-go backlash oscillation from dense streaming.
+        
+        Per-joint speed caps are sized so the slowest joint (largest |Δq|)
+        runs at the flat conservative cap and faster joints are scaled down
+        to match arrival times, so all joints finish together.  This requires
+        the rad/s → speed-register LSB conversion (Sprint 07 Part A); until
+        that lands, a flat cap is used for all joints.
+        
+        Args:
+            start_q: Starting logical joint angles (radians).  Not used in
+                     the command itself (the servo knows its current position),
+                     but reserved for future per-joint cap sizing that needs
+                     the per-joint Δq.
+            end_q: Target logical joint angles (radians), one per logical joint.
+            per_joint_velocities: Optional per-joint max velocities in rad/s.
+                                  If None or not yet calibrated, the flat
+                                  conservative cap from config is used.
+            flat_speed: Optional override for the baseline speed register value
+                        (0-4095).  If None, uses config.PROFILED_SEGMENT_DEFAULT_SPEED.
+        
+        Returns:
+            list[tuple[int, int, int, int]]: Sync-write commands in the format
+            (servo_id, raw_position, speed_register, accel_register), ready
+            to pass to backend.sync_write().
+        """
+        if len(end_q) != self.num_joints:
+            raise ValueError(
+                f"Expected {self.num_joints} target positions, got {len(end_q)}"
+            )
+        
+        base_speed = flat_speed if flat_speed is not None else config.PROFILED_SEGMENT_DEFAULT_SPEED
+        base_speed = max(
+            config.PROFILED_SEGMENT_SPEED_MIN,
+            min(config.PROFILED_SEGMENT_SPEED_MAX, base_speed),
+        )
+        fixed_accel = config.PROFILED_SEGMENT_DEFAULT_ACCEL
+        
+        # --- Per-joint cap sizing (slowest joint sets duration) ---
+        # Compute per-joint |Δq|, pick the slowest joint as the duration-setter,
+        # then scale other joints' speed caps down proportionally so all
+        # joints arrive together.  Uses the flat cap as the baseline speed
+        # for the slowest joint.
+        speeds_per_logical: list[int] = [base_speed] * self.num_joints
+        if start_q is not None and len(start_q) == self.num_joints:
+            deltas = [abs(end_q[j] - start_q[j]) for j in range(self.num_joints)]
+            max_delta = max(deltas) if deltas else 0.0
+            if max_delta > 1e-9:
+                for j in range(self.num_joints):
+                    # Scaled speed: proportional to this joint's share of the
+                    # total travel, so all joints finish in the same time.
+                    ratio = deltas[j] / max_delta
+                    scaled = int(round(base_speed * ratio))
+                    speeds_per_logical[j] = max(
+                        config.PROFILED_SEGMENT_SPEED_MIN,
+                        min(config.PROFILED_SEGMENT_SPEED_MAX, scaled),
+                    )
+        
+        # --- Build sync_write commands ---
+        commands: list[tuple[int, int, int, int]] = []
+        
+        for logical_idx, physical_indices in self._logical_to_physical_map.items():
+            angle_with_offset = end_q[logical_idx] + self._master_offsets_rad[logical_idx]
+            speed_reg = speeds_per_logical[logical_idx]
+            
+            for physical_idx in physical_indices:
+                servo_id = self._servo_ids[physical_idx]
+                
+                if servo_id not in self._present_servo_ids:
+                    continue
+                
+                raw_pos = self._angle_to_raw(angle_with_offset, physical_idx)
+                commands.append((servo_id, raw_pos, speed_reg, fixed_accel))
+        
+        return commands
+    
+    def execute_profiled_segment(
+        self,
+        start_q: list[float],
+        end_q: list[float],
+        per_joint_velocities: Optional[list[float]] = None,
+    ) -> None:
+        """
+        Plan and execute a single profiled-segment move (blocking).
+        
+        Convenience wrapper around plan_profiled_segment() + sync_write().
+        Commands all joints to their endpoint with per-joint speed caps and
+        a moderate fixed accel, letting the firmware trapezoidal profiler run
+        the whole segment.  The caller is responsible for waiting for the
+        move to complete (the firmware profiles autonomously).
+        
+        Args:
+            start_q: Starting logical joint angles (radians).
+            end_q: Target logical joint angles (radians).
+            per_joint_velocities: Optional per-joint max velocities (rad/s).
+        """
+        if not self._initialized:
+            print("[HLS3950] ERROR: Backend not initialized.")
+            return
+        
+        commands = self.plan_profiled_segment(start_q, end_q, per_joint_velocities)
+        self._current_positions_rad = list(end_q)
+        self.sync_write(commands)
     
     def sync_read_positions(self, timeout_s: Optional[float] = None) -> dict[int, int]:
         """
@@ -472,7 +613,7 @@ class FeetechBackend(ActuatorBackend):
             return
         
         if actuator_id not in self._present_servo_ids:
-            print(f"[Feetech] Cannot command absent servo {actuator_id}")
+            print(f"[HLS3950] Cannot command absent servo {actuator_id}")
             return
         
         # Find config index for this servo
@@ -483,7 +624,7 @@ class FeetechBackend(ActuatorBackend):
             if actuator_id == self._gripper_servo_id:
                 config_idx = len(self._servo_ids)  # Use a placeholder index
             else:
-                print(f"[Feetech] Unknown servo ID {actuator_id}")
+                print(f"[HLS3950] Unknown servo ID {actuator_id}")
                 return
         
         # Convert angle to raw
@@ -524,17 +665,17 @@ class FeetechBackend(ActuatorBackend):
             return False
         
         if actuator_id not in self._present_servo_ids:
-            print(f"[Feetech] Cannot calibrate absent servo {actuator_id}")
+            print(f"[HLS3950] Cannot calibrate absent servo {actuator_id}")
             return False
         
-        print(f"[Feetech] Calibrating servo {actuator_id} - setting current position as zero...")
+        print(f"[HLS3950] Calibrating servo {actuator_id} - setting current position as zero...")
         result = protocol.calibrate_middle_position(self._ser, actuator_id)
         
         if result:
             time.sleep(0.1)  # Wait for EEPROM write
-            print(f"[Feetech] Servo {actuator_id} calibrated successfully.")
+            print(f"[HLS3950] Servo {actuator_id} calibrated successfully.")
         else:
-            print(f"[Feetech] Failed to calibrate servo {actuator_id}.")
+            print(f"[HLS3950] Failed to calibrate servo {actuator_id}.")
         
         return result
     
@@ -573,7 +714,7 @@ class FeetechBackend(ActuatorBackend):
         time.sleep(0.01)
         
         if success:
-            print(f"[Feetech] Set PID for servo {actuator_id}: Kp={kp}, Ki={ki}, Kd={kd}")
+            print(f"[HLS3950] Set PID for servo {actuator_id}: Kp={kp}, Ki={ki}, Kd={kd}")
         
         return success
     
@@ -587,7 +728,7 @@ class FeetechBackend(ActuatorBackend):
         if not self._initialized:
             return False
         
-        print("[Feetech] Applying joint limits to servos...")
+        print("[HLS3950] Applying joint limits to servos...")
         all_ok = True
         
         for logical_idx, physical_indices in self._logical_to_physical_map.items():
@@ -609,7 +750,7 @@ class FeetechBackend(ActuatorBackend):
                 
                 if not protocol.write_angle_limits(self._ser, servo_id, final_min, final_max):
                     all_ok = False
-                    print(f"[Feetech] Failed to set limits for servo {servo_id}")
+                    print(f"[HLS3950] Failed to set limits for servo {servo_id}")
                 
                 time.sleep(0.02)
         
@@ -632,7 +773,7 @@ class FeetechBackend(ActuatorBackend):
     def set_gripper_position(self, position_rad: float, speed: int = 50, accel: int = 0) -> None:
         """Set the gripper position."""
         if not self._gripper_present or not self._gripper_servo_id:
-            print("[Feetech] No gripper present.")
+            print("[HLS3950] No gripper present.")
             return
         
         # Clamp to limits
@@ -799,12 +940,12 @@ class FeetechBackend(ActuatorBackend):
         if self._serial_port_path:
             if os.path.exists(self._serial_port_path):
                 return self._serial_port_path
-            print(f"[Feetech] WARNING: Specified port {self._serial_port_path} does not exist.")
+            print(f"[HLS3950] WARNING: Specified port {self._serial_port_path} does not exist.")
         
         # 2. Environment variable
         env_port = os.environ.get("SERIAL_PORT")
         if env_port and os.path.exists(env_port):
-            print(f"[Feetech] Using serial port from SERIAL_PORT env var: {env_port}")
+            print(f"[HLS3950] Using serial port from SERIAL_PORT env var: {env_port}")
             return env_port
         
         # 3. Auto-detect
@@ -812,7 +953,7 @@ class FeetechBackend(ActuatorBackend):
     
     def _auto_detect_serial_port(self) -> Optional[str]:
         """
-        Auto-detect the serial port with connected Feetech servos.
+        Auto-detect the serial port with connected HLS3950 servos.
         
         Returns:
             Optional[str]: Detected port path, or None if not found.
@@ -839,7 +980,7 @@ class FeetechBackend(ActuatorBackend):
                     continue
         
         if not candidates:
-            print("[Feetech] No candidate serial devices found.")
+            print("[HLS3950] No candidate serial devices found.")
             return None
         
         # Probe each candidate
@@ -849,13 +990,13 @@ class FeetechBackend(ActuatorBackend):
                 responsive.append(path)
         
         if len(responsive) == 1:
-            print(f"[Feetech] Auto-detected servo serial port: {responsive[0]}")
+            print(f"[HLS3950] Auto-detected servo serial port: {responsive[0]}")
             return responsive[0]
         elif len(responsive) > 1:
-            print(f"[Feetech] WARNING: Multiple responsive ports found: {responsive}")
+            print(f"[HLS3950] WARNING: Multiple responsive ports found: {responsive}")
             return responsive[0]
         
-        print("[Feetech] No responsive serial port found.")
+        print("[HLS3950] No responsive serial port found.")
         return None
     
     def _probe_serial_port(self, path: str) -> bool:
@@ -882,6 +1023,6 @@ class FeetechBackend(ActuatorBackend):
                             return True
                 return False
         except Exception as e:
-            print(f"[Feetech] Probe skipped {path}: {e}")
+            print(f"[HLS3950] Probe skipped {path}: {e}")
             return False
 

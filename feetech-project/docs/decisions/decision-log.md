@@ -4,6 +4,55 @@ Architecture and project decisions, with rationale. Newest first.
 
 ---
 
+## 2026-09-11 — Backend rename: feetech → sts3215 + separate HLS3950 backend
+
+**Decision:** Rename the existing `backends/feetech/` to `backends/sts3215/` (class `FeetechBackend` → `STS3215Backend`, registration `"feetech"` → `"sts3215"`), and create a separate `backends/hls3950/` backend for the HLS3950.
+
+**Context:** The user wants backend names to use actual model numbers, not a generic family name. The HLS3950 uses the same FT-SCS protocol family as the STS3215, but the register map has critical differences (0x2C = Target Current vs Goal Time, different SYNC_WRITE layout, factory-restricted angle limits, no torque-switch calibration). A separate backend avoids risking the working STS3215 path.
+
+**Consequences:**
+- `backends/sts3215/` — existing backend, renamed, no behavior change
+- `backends/hls3950/` — new backend, registered as `"hls3950"`, with HLS-specific SYNC_WRITE layout (start 0x2A, 6 bytes, non-zero current) and HLS-specific register map
+- `run_controller.py` angle-limit gate checks `("sts3215", "hls3950")` — both serial servo backends
+- Simulation backend falls back to `"sts3215"` config module for constants
+- The two backends are NOT interchangeable at the protocol level — `sync_write_goal_pos_speed_accel` has different packet layouts
+
+---
+
+## 2026-09-11 — HLS3950 SYNC_WRITE uses 0x2A start with non-zero current
+
+**Decision:** The HLS3950 SYNC_WRITE starts at register 0x2A with 6 bytes `[Pos(2), Current(2), Speed(2)]` and a non-zero Target Current value (default 980). The STS3215 SYNC_WRITE starts at 0x29 with 7 bytes `[Accel(1), Pos(2), Time(2), Speed(2)]` and zeros for Time.
+
+**Context:** Discovered during bench validation. Register 0x2C is "Target Current" on the HLS3950 and "Goal Time" on the STS3215. The STS3215 sync_write writes 0x0000 to bytes 4-5 (the Time field), which is harmless on STS. On the HLS, writing 0 to Target Current **disables the motor** — the servo accepts the goal but never moves, and gets stuck requiring a restart (0x08 instruction) to recover.
+
+**Consequences:**
+- The HLS sync_write function sets acceleration via individual write to 0x29 before the batch packet
+- The HLS sync_write includes a non-zero current value (SYNC_WRITE_DEFAULT_CURRENT=980) in the 0x2C field
+- The two backends' `sync_write_goal_pos_speed_accel` functions are NOT interchangeable despite having the same function signature
+- If the arm needs per-joint torque limiting, SYNC_WRITE_DEFAULT_CURRENT should become configurable per servo
+
+---
+
+## 2026-09-05 — USB serial passthrough: Design B (udev mirror)
+
+**Decision:** Use Design B (udev rule + mirror node + directory bind-mount) to pass the CH340 USB-serial adapter into the OpenChamber container, rather than Design A (bind-mount host `/dev`).
+
+**Context:** The container runs non-privileged with `user: "1000:1000"`. A plain `devices:` entry was rejected because it (a) makes boot depend on the dongle being plugged in (breaks the reboot fix), and (b) pins the device inode at start, so a replug strands the container on a dead mapping until recreate (kills live sessions).
+
+Two designs satisfied the hard requirements (optional at boot, hotplug without restart):
+- Design A: bind-mount host `/dev` + `device_cgroup_rules: c 188:* rwm`. Overlays the container's `/dev/pts` and `/dev/shm` with the host's — risk of subtle PTY allocation failures in OpenChamber terminal sessions.
+- Design B: udev rule mirrors just the serial node into `/dev/openchamber` (devtmpfs, not `/run` which is `nodev`), bind-mounted as `/dev/serial` inside the container.
+
+**Consequences:**
+- Container's `/dev/pts` and `/dev/shm` stay private — no PTY risk
+- Port appears as `/dev/serial/ch340` inside the container (stable alias), not `/dev/ttyUSB0`
+- pyserial's `list_ports.comports()` returns empty (node not in `/dev/ttyUSB*`); must pass port explicitly via `SERIAL_PORT=/dev/serial/ch340`
+- New host machinery: udev rule, tmpfiles entry, helper script (documented in `usb/README.md`)
+- The udev rule matches vid `1a86` pid `7523` only; a different USB-serial chip needs a new rule line
+- `group_add: ["20"]` kept as belt-and-braces even though the mirrored node is owned `1000:1000`
+
+---
+
 ## 2026-09-04 — Use benchtop PSU with CC/CV for test bench power
 
 **Decision:** Use a 32V 10A benchtop PSU with CC/CV mode instead of the 200W LED PSU + buck converter.

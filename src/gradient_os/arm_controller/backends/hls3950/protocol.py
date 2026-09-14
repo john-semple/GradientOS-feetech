@@ -1,8 +1,8 @@
-# backends/feetech/protocol.py
+# backends/hls3950/protocol.py
 #
-# Low-level Feetech servo protocol implementation.
+# Low-level FT-SCS servo protocol (HLS3950) implementation.
 # Handles packet construction, checksum calculation, and serial communication
-# for Feetech STS/SCS series servos.
+# for Feetech HLS3950 servos.
 #
 # This module is designed to be independent of robot-specific configuration.
 # It receives a serial port handle and servo IDs as parameters rather than
@@ -69,7 +69,7 @@ def get_sync_profiles() -> list[tuple[float, float, float]]:
 
 def calculate_checksum(packet_data: bytearray) -> int:
     """
-    Calculates the Feetech checksum for a packet.
+    Calculates the FT-SCS checksum for a packet.
     
     The checksum is the bitwise inverse of the sum of all bytes in the packet
     (excluding the initial 0xFF headers).
@@ -124,7 +124,7 @@ def ping(ser: serial.Serial, servo_id: int) -> bool:
         return False
 
     except Exception as e:
-        print(f"[Feetech PING] Error during ping for servo {servo_id}: {e}")
+        print(f"[HLS3950 PING] Error during ping for servo {servo_id}: {e}")
         return False
 
 
@@ -259,7 +259,7 @@ def write_register_byte(ser: serial.Serial, servo_id: int, register_address: int
             ser.write(packet)
         return True
     except Exception as e:
-        print(f"[Feetech] Error writing byte to servo {servo_id} register {hex(register_address)}: {e}")
+        print(f"[HLS3950] Error writing byte to servo {servo_id} register {hex(register_address)}: {e}")
         return False
 
 
@@ -298,7 +298,7 @@ def write_register_word(ser: serial.Serial, servo_id: int, register_address: int
             ser.write(packet)
         return True
     except Exception as e:
-        print(f"[Feetech] Error writing word to servo {servo_id} register {hex(register_address)}: {e}")
+        print(f"[HLS3950] Error writing word to servo {servo_id} register {hex(register_address)}: {e}")
         return False
 
 
@@ -367,7 +367,7 @@ def read_position(
         return position
 
     except Exception as e:
-        print(f"[Feetech ReadPos] Servo {servo_id}: Error: {e}")
+        print(f"[HLS3950 ReadPos] Servo {servo_id}: Error: {e}")
         return None
 
 
@@ -379,8 +379,14 @@ def sync_write_goal_pos_speed_accel(ser: serial.Serial, servo_data_list: list[tu
     """
     Send a SYNC WRITE packet to command multiple servos simultaneously.
     
-    This is the most efficient way to command multiple servos as it bundles
-    all commands into a single serial transmission.
+    HLS3950-specific: starts at 0x2A (not 0x29) with 6 bytes per servo:
+      [Pos_L, Pos_H, Current_L, Current_H, Speed_L, Speed_H]
+    
+    The acceleration must be set separately via an individual write to 0x29
+    before calling this function.  The Target Current (0x2C) is set to
+    SYNC_WRITE_DEFAULT_CURRENT on every write — writing 0 to 0x2C disables
+    the motor on the HLS3950 (unlike the STS3215 where 0x2C is "Goal Time"
+    and 0 is harmless).
     
     Args:
         ser: Open serial port handle.
@@ -390,6 +396,7 @@ def sync_write_goal_pos_speed_accel(ser: serial.Serial, servo_data_list: list[tu
                          - position_value: Target position (0-4095)
                          - speed_value: Target speed (0-4095)
                          - accel_register_value: Acceleration (0-254, 0=max)
+                           (used to set 0x29 individually before the sync_write)
     """
     if ser is None or not ser.is_open:
         return
@@ -397,6 +404,12 @@ def sync_write_goal_pos_speed_accel(ser: serial.Serial, servo_data_list: list[tu
     num_servos = len(servo_data_list)
     if num_servos == 0:
         return
+
+    # Set acceleration individually for each servo before the sync_write
+    # (HLS sync_write starts at 0x2A, so 0x29 accel is not included in the packet)
+    current_val = config.SYNC_WRITE_DEFAULT_CURRENT
+    for servo_id, _pos, _speed, accel_reg_val in servo_data_list:
+        write_register_byte(ser, servo_id, config.SERVO_ADDR_TARGET_ACCELERATION, accel_reg_val)
 
     # Calculate packet length
     # PacketLen = num_servos * (ID + DataLen) + 4
@@ -415,20 +428,18 @@ def sync_write_goal_pos_speed_accel(ser: serial.Serial, servo_data_list: list[tu
     packet[6] = config.SYNC_WRITE_DATA_LEN_PER_SERVO
 
     idx = 7
-    for servo_id, pos_val, speed_val, accel_reg_val in servo_data_list:
+    for servo_id, pos_val, speed_val, _accel_reg_val in servo_data_list:
         packet[idx] = servo_id
         idx += 1
         
-        # Data order: Accel(1), Pos_L(1), Pos_H(1), Time_L(1), Time_H(1), Spd_L(1), Spd_H(1)
-        packet[idx] = accel_reg_val
-        idx += 1
+        # Data order: Pos_L(1), Pos_H(1), Current_L(1), Current_H(1), Spd_L(1), Spd_H(1)
         packet[idx] = pos_val & 0xFF
         idx += 1
         packet[idx] = (pos_val >> 8) & 0xFF
         idx += 1
-        packet[idx] = 0  # Time_L (always 0)
+        packet[idx] = current_val & 0xFF
         idx += 1
-        packet[idx] = 0  # Time_H (always 0)
+        packet[idx] = (current_val >> 8) & 0xFF
         idx += 1
         packet[idx] = speed_val & 0xFF
         idx += 1
@@ -442,7 +453,7 @@ def sync_write_goal_pos_speed_accel(ser: serial.Serial, servo_data_list: list[tu
         with _SERIAL_LOCK:
             ser.write(packet[:idx + 1])
     except Exception as e:
-        print(f"[Feetech SyncWrite] Error: {e}")
+        print(f"[HLS3950 SyncWrite] Error: {e}")
 
 
 # =============================================================================
@@ -525,7 +536,7 @@ def sync_read_positions(
         read_dur = time.perf_counter() - read_start
 
         if len(response_data) < bytes_to_read:
-            print(f"[Feetech SyncRead] WARNING: Expected {bytes_to_read} bytes, got {len(response_data)}.")
+            print(f"[HLS3950 SyncRead] WARNING: Expected {bytes_to_read} bytes, got {len(response_data)}.")
 
         # PARSE
         positions = {}
@@ -563,7 +574,7 @@ def sync_read_positions(
 
         if expected_ids:
             missing = list(expected_ids)
-            print(f"[Feetech SyncRead] No response from IDs: {missing}")
+            print(f"[HLS3950 SyncRead] No response from IDs: {missing}")
             if alert_callback:
                 for sid in missing:
                     alert_callback(sid, -1, ["Timeout"])
@@ -571,7 +582,7 @@ def sync_read_positions(
         return positions
 
     except Exception as e:
-        print(f"[Feetech SyncRead] Error: {e}")
+        print(f"[HLS3950 SyncRead] Error: {e}")
         return {}
     finally:
         if timeout_s is not None and original_timeout is not None:
@@ -669,7 +680,7 @@ def sync_read_block(
 
         return results
     except Exception as e:
-        print(f"[Feetech SyncReadBlk] Error: {e}")
+        print(f"[HLS3950 SyncReadBlk] Error: {e}")
         return {}
     finally:
         if timeout_s is not None and original_timeout is not None:
@@ -711,7 +722,7 @@ def calibrate_middle_position(ser: serial.Serial, servo_id: int) -> bool:
             ser.write(packet)
         return True
     except Exception as e:
-        print(f"[Feetech] Error sending calibrate command to servo {servo_id}: {e}")
+        print(f"[HLS3950] Error sending calibrate command to servo {servo_id}: {e}")
         return False
 
 
@@ -744,7 +755,7 @@ def factory_reset(ser: serial.Serial, servo_id: int) -> bool:
             ser.write(packet)
         return True
     except Exception as e:
-        print(f"[Feetech] Error sending factory reset to servo {servo_id}: {e}")
+        print(f"[HLS3950] Error sending factory reset to servo {servo_id}: {e}")
         return False
 
 
@@ -777,7 +788,7 @@ def restart(ser: serial.Serial, servo_id: int) -> bool:
             ser.write(packet)
         return True
     except Exception as e:
-        print(f"[Feetech] Error sending restart to servo {servo_id}: {e}")
+        print(f"[HLS3950] Error sending restart to servo {servo_id}: {e}")
         return False
 
 
@@ -803,7 +814,7 @@ def write_angle_limits(
     """
     # 1. Unlock EEPROM
     if not write_register_byte(ser, servo_id, config.SERVO_ADDR_WRITE_LOCK, 0):
-        print(f"[Feetech] Failed to unlock EEPROM for servo {servo_id}")
+        print(f"[HLS3950] Failed to unlock EEPROM for servo {servo_id}")
         return False
     time.sleep(0.01)
 

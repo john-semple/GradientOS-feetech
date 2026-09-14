@@ -5,8 +5,10 @@
 # for a specific servo/actuator type.
 #
 # Available backends:
-# - feetech: Feetech STS/SCS series serial bus servos
+# - sts3215: Feetech STS3215 (SCS/STS protocol, TTL single-wire)
+# - hls3950: Feetech HLS3950 (FT-SCS protocol, TTL single-wire)
 # - simulation: In-memory simulation (no hardware required)
+# - ethercat_rtcore: EtherCAT RTCore proxy (hard real-time path)
 #
 # Usage:
 # ------
@@ -14,11 +16,11 @@
 #   from gradient_os.arm_controller.backends import registry
 #   
 #   # 1. Set active backend config
-#   registry.set_active_backend("feetech")
+#   registry.set_active_backend("sts3215")
 #   
 #   # 2. Create and initialize backend instance
 #   robot_config_dict = selected_robot.get_config_dict()
-#   backend = registry.create_backend("feetech", robot_config_dict)
+#   backend = registry.create_backend("sts3215", robot_config_dict)
 #   backend.initialize()
 #   registry.set_active_backend_instance(backend)
 #
@@ -33,7 +35,8 @@ import os
 from . import registry
 
 # Import backend classes
-from .feetech import FeetechBackend
+from .sts3215 import STS3215Backend
+from .hls3950 import HLS3950Backend
 from .ethercat_rtcore import EthercatRTCoreBackend
 from .simulation import SimulationBackend
 
@@ -41,15 +44,15 @@ from .simulation import SimulationBackend
 # Backend Factory Functions
 # =============================================================================
 
-def _create_feetech_backend(robot_config: dict, **kwargs) -> FeetechBackend:
+def _create_sts3215_backend(robot_config: dict, **kwargs) -> STS3215Backend:
     """
-    Factory for FeetechBackend that maps RobotConfig dict to FeetechBackend format.
+    Factory for STS3215Backend that maps RobotConfig dict to STS3215Backend format.
     
-    The RobotConfig.get_config_dict() uses different key names than FeetechBackend
+    The RobotConfig.get_config_dict() uses different key names than STS3215Backend
     expects, so we need to map them here.
     """
-    # Map from RobotConfig keys to FeetechBackend keys
-    feetech_config = {
+    # Map from RobotConfig keys to STS3215Backend keys
+    servo_config = {
         'servo_ids': robot_config.get('actuator_ids', []),
         'logical_to_physical_map': robot_config.get('logical_to_physical_map', {}),
         'inverted_servo_ids': robot_config.get('inverted_actuator_ids', set()),
@@ -60,12 +63,40 @@ def _create_feetech_backend(robot_config: dict, **kwargs) -> FeetechBackend:
         'pid_gains': robot_config.get('actuator_pid_gains', {}),
     }
     
-    # Extract kwargs that FeetechBackend accepts
+    # Extract kwargs that STS3215Backend accepts
     serial_port = kwargs.get('serial_port', robot_config.get('default_serial_port'))
-    baud_rate = kwargs.get('baud_rate')  # None uses FeetechBackend default
+    baud_rate = kwargs.get('baud_rate')  # None uses STS3215Backend default
     
-    return FeetechBackend(
-        robot_config=feetech_config,
+    return STS3215Backend(
+        robot_config=servo_config,
+        serial_port=serial_port,
+        baud_rate=baud_rate if baud_rate else 1000000,  # Default to 1M
+    )
+
+
+def _create_hls3950_backend(robot_config: dict, **kwargs) -> HLS3950Backend:
+    """
+    Factory for HLS3950Backend that maps RobotConfig dict to HLS3950Backend format.
+    
+    Same mapping pattern as STS3215Backend — the RobotConfig uses generic key
+    names that need to be mapped to the backend's expected format.
+    """
+    servo_config = {
+        'servo_ids': robot_config.get('actuator_ids', []),
+        'logical_to_physical_map': robot_config.get('logical_to_physical_map', {}),
+        'inverted_servo_ids': robot_config.get('inverted_actuator_ids', set()),
+        'joint_limits_rad': robot_config.get('logical_joint_limits_rad', []),
+        'master_offsets_rad': robot_config.get('logical_joint_master_offsets_rad', []),
+        'gripper_servo_id': robot_config.get('gripper_actuator_id'),
+        'gripper_limits_rad': robot_config.get('gripper_limits_rad', [0, math.pi]),
+        'pid_gains': robot_config.get('actuator_pid_gains', {}),
+    }
+    
+    serial_port = kwargs.get('serial_port', robot_config.get('default_serial_port'))
+    baud_rate = kwargs.get('baud_rate')  # None uses HLS3950Backend default
+    
+    return HLS3950Backend(
+        robot_config=servo_config,
         serial_port=serial_port,
         baud_rate=baud_rate if baud_rate else 1000000,  # Default to 1M
     )
@@ -98,18 +129,25 @@ def _create_ethercat_rtcore_backend(robot_config: dict, **kwargs) -> EthercatRTC
 # Register available backends
 # =============================================================================
 
-# Feetech STS/SCS series servos
+# Feetech STS3215 (SCS/STS protocol, TTL single-wire)
 registry.register_backend_class(
-    name="feetech",
-    factory=_create_feetech_backend,
-    config_module_path="gradient_os.arm_controller.backends.feetech.config",
+    name="sts3215",
+    factory=_create_sts3215_backend,
+    config_module_path="gradient_os.arm_controller.backends.sts3215.config",
+)
+
+# Feetech HLS3950 (FT-SCS protocol, TTL single-wire)
+registry.register_backend_class(
+    name="hls3950",
+    factory=_create_hls3950_backend,
+    config_module_path="gradient_os.arm_controller.backends.hls3950.config",
 )
 
 # In-memory simulation (no hardware)
 registry.register_backend_class(
     name="simulation",
     factory=_create_simulation_backend,
-    config_module_path=None,  # Simulation uses feetech config as fallback
+    config_module_path=None,  # Simulation uses sts3215 config as fallback
 )
 
 # EtherCAT RTCore proxy backend
@@ -119,4 +157,4 @@ registry.register_backend_class(
     config_module_path="gradient_os.arm_controller.backends.ethercat_rtcore.config",
 )
 
-__all__ = ['FeetechBackend', 'SimulationBackend', 'EthercatRTCoreBackend', 'registry']
+__all__ = ['STS3215Backend', 'HLS3950Backend', 'SimulationBackend', 'EthercatRTCoreBackend', 'registry']

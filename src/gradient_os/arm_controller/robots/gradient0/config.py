@@ -13,7 +13,7 @@
 #
 # Note: This configuration is independent of the servo type. Servo-specific
 # settings (encoder resolution, protocol constants, PID gains) are defined
-# in the servo backend (e.g., backends/feetech/config.py).
+# in the servo backend (e.g., backends/sts3215/config.py).
 
 import math
 from typing import Optional
@@ -54,7 +54,7 @@ class Gradient0Config(RobotConfig):
         """
         The Gradient0 uses Feetech STS3215 servos.
         """
-        return "feetech"
+        return "sts3215"
     
     # =========================================================================
     # Kinematic Structure

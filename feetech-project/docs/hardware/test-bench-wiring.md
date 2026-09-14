@@ -33,40 +33,40 @@ From the URT-1 manual (FE-URT-1 USE MANUAL, FeiTe/Feetech):
 
 ### Step 1: Verify the PSU
 
-- [ ] Turn on bench PSU with nothing connected to the output
-- [ ] Set voltage to 12V
-- [ ] Set current limit to 2A (low starting point for one servo)
-- [ ] Verify voltage with multimeter at the PSU output terminals
-- [ ] Confirm polarity: V+ and V- are correct
+- [x] Turn on bench PSU with nothing connected to the output
+- [x] Set voltage to 12V
+- [x] Set current limit to 2A (low starting point for one servo)
+- [x] Verify voltage with multimeter at the PSU output terminals — **measured 12.0V**
+- [x] Confirm polarity: V+ and V- are correct
 
 ### Step 2: Wire PSU to URT-1 servo-power terminal
 
-- [ ] PSU OFF
-- [ ] Connect PSU V+ to URT-1 servo-power terminal (+)
-- [ ] Connect PSU V- to URT-1 servo-power terminal (-)
-- [ ] Double-check polarity with multimeter (continuity check from PSU terminal to URT-1 terminal)
-- [ ] PSU ON, no servo connected yet
-- [ ] Measure voltage at the URT-1 servo-power terminal with multimeter — confirm 12V
-- [ ] Measure voltage at the servo output port (the 3-pin SCS/TTL connector) — confirm 12V present on the V+ pin
-- [ ] PSU OFF
+- [x] PSU OFF
+- [x] Connect PSU V+ to URT-1 servo-power terminal (+)
+- [x] Connect PSU V- to URT-1 servo-power terminal (-)
+- [x] Double-check polarity with multimeter (continuity check from PSU terminal to URT-1 terminal)
+- [x] PSU ON, no servo connected yet
+- [x] Measure voltage at the URT-1 servo-power terminal with multimeter — **measured 12.0V**
+- [x] Measure voltage at the servo output port (the 3-pin SCS/TTL connector) — **measured 12.0V on V+ pin**
+- [x] PSU OFF
 
 ### Step 3: Connect URT-1 to Pi via USB
 
-- [ ] Plug Micro USB cable into URT-1
-- [ ] Plug other end into Pi USB port
-- [ ] On the Pi, check for the device: `ls /dev/ttyUSB*`
-- [ ] Confirm the URT-1 shows up (likely `/dev/ttyUSB0`)
-- [ ] Note: if running inside Docker, this device won't be visible yet — needs `devices:` block in docker-compose.yml (requires human approval)
+- [x] Plug Micro USB cable into URT-1
+- [x] Plug other end into Pi USB port
+- [x] On the Pi, check for the device: `ls /dev/ttyUSB*` — **present as /dev/ttyUSB0**
+- [x] Confirm the URT-1 shows up (likely `/dev/ttyUSB0`) — **confirmed (CH340, vid 1a86, pid 7523)**
+- [x] Note: if running inside Docker, this device won't be visible yet — needs `devices:` block in docker-compose.yml (requires human approval) — **resolved: Design B USB passthrough implemented, see [usb/README.md](../usb/README.md)**
 
 ### Step 4: Connect one servo
 
-- [ ] PSU OFF
-- [ ] Connect one STS3215 to the URT-1's SCS/TTL port (3-pin connector)
-- [ ] Double-check the connector orientation (anti-reverse design helps, but verify)
-- [ ] PSU ON
-- [ ] Watch the bench PSU current readout — should be low (idle current, maybe 50-200mA)
-- [ ] If current spikes immediately, cut power and investigate
-- [ ] Touch-test the servo after 30 seconds — should not be hot
+- [x] PSU OFF
+- [x] Connect one STS3215 to the URT-1's SCS/TTL port (3-pin connector)
+- [x] Double-check the connector orientation (anti-reverse design helps, but verify)
+- [x] PSU ON
+- [x] Watch the bench PSU current readout — should be low (idle current, maybe 50-200mA) — **measured 299mA (slightly above the 50-200mA estimate; acceptable for a 12V STS3215 at idle)**
+- [x] If current spikes immediately, cut power and investigate — **no spike, steady 299mA**
+- [x] Touch-test the servo after 30 seconds — should not be hot — **confirmed cool to touch after 30s**
 
 ### Step 5: Verify servo is alive (software, Phase 2)
 
@@ -105,7 +105,7 @@ This step is in sprint-02, not here. Phase 1 is purely electrical.
 
 ## Open items for this doc
 
-- [ ] Confirm URT-1 USB port type (manual says Mini, user reports Micro — check the board)
-- [ ] Confirm STS3215 is the 12V variant (verify with multimeter before connecting servo)
+- [x] Confirm URT-1 USB port type (manual says Mini, user reports Micro — check the board) — **confirmed Micro USB on this board**
+- [x] Confirm STS3215 is the 12V variant (verify with multimeter before connecting servo) — **confirmed 12V, verified at URT-1 servo-power terminal and SCS/TTL port**
+- [x] Document Docker USB passthrough when the compose edit is approved — **done, see [usb/README.md](../usb/README.md) (Design B: udev mirror to /dev/openchamber, bind-mounted as /dev/serial inside container)**
 - [ ] Once HLS3950 is tested, add its wiring section (may use different URT-1 channel)
-- [ ] Document Docker USB passthrough when the compose edit is approved

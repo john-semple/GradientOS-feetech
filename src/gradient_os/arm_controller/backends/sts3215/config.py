@@ -1,7 +1,7 @@
-# backends/feetech/config.py
+# backends/sts3215/config.py
 #
-# Feetech STS/SCS series servo-specific configuration constants.
-# These values are specific to the Feetech servo protocol and hardware.
+# Feetech STS3215 servo-specific configuration constants.
+# These values are specific to the Feetech STS3215 servo protocol and hardware.
 #
 # This module contains:
 # - Protocol constants (headers, instruction codes, register addresses)
@@ -9,7 +9,7 @@
 # - Default tuning values (PID gains, acceleration scaling)
 #
 # Robot-specific configuration (joint limits, servo IDs, etc.) should be
-# defined elsewhere and passed to the FeetechBackend during initialization.
+# defined elsewhere and passed to the STS3215Backend during initialization.
 
 import math
 
@@ -17,17 +17,17 @@ import math
 # Serial Communication
 # =============================================================================
 
-# Default baud rate for Feetech servo communication
+# Default baud rate for Feetech STS3215 servo communication
 DEFAULT_BAUD_RATE = 1000000
 
 # Default serial read timeout in seconds
 SERIAL_READ_TIMEOUT = 0.05
 
 # =============================================================================
-# Feetech Protocol Constants
+# FT-SCS Protocol Constants
 # =============================================================================
 
-# Packet header bytes (all Feetech packets start with 0xFF 0xFF)
+# Packet header bytes (all FT-SCS packets start with 0xFF 0xFF)
 SERVO_HEADER = 0xFF
 
 # Broadcast ID for sync commands (affects all servos on the bus)
@@ -94,6 +94,31 @@ DEFAULT_SERVO_ACCELERATION_DEG_S2 = 500
 ACCELERATION_SCALE_FACTOR = 100
 
 # =============================================================================
+# Profiled-Segment Defaults (Sprint 04 — endpoint-paradigm quick fix)
+# =============================================================================
+# These cap the single-goal command used when supports_profiled_segments is
+# True.  The firmware trapezoidal profiler runs the whole segment from these
+# values, so we use moderate (not maxed) settings — the "Home-button" recipe
+# generalised to every move.
+#
+# Per-joint speed caps are computed by plan_profiled_segment(); the constants
+# here are the *flat interim* values used until Sprint 07 Part A lands a
+# measured rad/s → LSB calibration.
+
+# Flat conservative speed cap (0-4095).  500 ≈ the speed the smooth Home move
+# already uses; safe for all joints on the Gradient0 arm.
+PROFILED_SEGMENT_DEFAULT_SPEED = 500
+
+# Fixed moderate acceleration register value (1-254, 0 = max).  10 is the
+# bench-safe-move recipe value per sprint-01.
+PROFILED_SEGMENT_DEFAULT_ACCEL = 10
+
+# Min/max clamps for the speed register value so a miscalibrated per-joint cap
+# can never accidentally max out the servo.
+PROFILED_SEGMENT_SPEED_MIN = 30
+PROFILED_SEGMENT_SPEED_MAX = 2000
+
+# =============================================================================
 # Default PID Gains
 # =============================================================================
 
@@ -108,7 +133,7 @@ DEFAULT_KD = 30     # Derivative gain (0-254)
 # Servo Value Mapping
 # =============================================================================
 
-# Feetech servos use a 12-bit position value (0-4095)
+# STS3215 servos use a 12-bit position value (0-4095)
 # Center position is typically 2048
 # Full range is typically ±π radians (±180°) around center
 

@@ -1944,3 +1944,328 @@ Use this file as persistent, repo-local execution memory.
 
 - Remaining risk or pending check:
   - None immediate.
+
+### 2026-09-05 — Sprint 01 electronics + container USB passthrough
+
+#### Environment
+- Working inside the OpenChamber container on `pi5-sbc-01` (aarch64, Ubuntu 24.04, 4 GB RAM).
+- Repo at `/home/ubuntu/workspaces/GradientOS` (mounted from host `/dev/mmcblk0p2`).
+- Container runs as `uid=1000(ubuntu) gid=1000(ubuntu) groups=1000(ubuntu),20(dialout)`, non-privileged.
+- No `.venv`, no `pip`, no `uv`, no build tools inside the container. The repo has a C++ IK solver (scikit-build-core + pybind11) that needs `build-essential cmake python3-dev`.
+
+#### Mistakes / Near-Misses
+- Initially assumed I was in a sandboxed environment without USB access. I was actually inside the target container with the passthrough already working. Lesson: run `ls -l /dev/serial/ch340 && hostname && id` early to verify environment when USB passthrough is involved.
+- The sprint doc estimated idle current at 50-200mA; actual was 299mA. Not a mistake, but the estimate range in the docs is low for a 12V STS3215.
+
+#### User Preferences
+- User wants to run GradientOS inside the container (not on the Pi host). Chose to rebuild the Dockerfile rather than run on the host.
+- User asks for explanations of hardware controls (OCP vs amperage, signal level slider) — provide concrete, practical guidance, not just definitions.
+- User wants Cursor to handle the Dockerfile rebuild — provide complete, copy-pasteable instructions.
+- User declined to pick Design A vs B without explanation; wanted help deciding. Recommendation given (Design B), user accepted.
+
+#### What Worked
+- Design B USB passthrough: udev mirror to `/dev/openchamber` (devtmpfs, not `/run` which is `nodev`), bind-mounted as `/dev/serial`. Container sees `/dev/serial/ch340` (stable alias). No PTY/shm overlay risk.
+- `device_cgroup_rules: c 188:* rwm` is load-bearing on cgroup v2 — the node is visible without it but every open() fails with EACCES.
+- `group_add: ["20"]` kept as belt-and-braces even though mirrored node is owned `1000:1000`.
+- pyserial 3.5 installed as `python3-serial` in the last RUN layer — 19s cache hit, no node/npm/opencode layer invalidation.
+
+#### Guardrails For Next Session
+- The container has no build tools. Before trying to run GradientOS, the Dockerfile must be rebuilt with `build-essential cmake python3-dev` + `uv`. Instructions are in the Cursor handoff (this session's earlier message).
+- `SERIAL_PORT=/dev/serial/ch340` env var is required — pyserial `list_ports.comports()` returns empty inside the container because the node is in `/dev/serial/` not `/dev/ttyUSB*`.
+- Do not move the udev mirror directory back to `/run` or `/tmp` — they are mounted `nodev` and device nodes will fail to open with EACCES.
+- Do not change `ports:` lines in docker-compose.yml — the boot script greps the tailnet IP by regex.
+- `OPENCODE_VERSION` and `OPENCHAMBER_VERSION` are unpinned in `.env` — any cache miss on node/npm layers would upgrade them. Pin to 1.18.25 / 1.21.1 before a full rebuild.
+
+#### Follow-Ups / Risks
+- Physical USB unplug/replug test still pending.
+- Reboot test pending (tmpfiles recreation of `/dev/openchamber`).
+- GradientOS venv setup in container blocked on Dockerfile rebuild.
+- Sprint 02 (Servo Protocol Validation) is next — needs the venv working first.
+
+## Sprint 02 Part A — servo motion + docs (2026-09-05)
+
+#### Context
+- User created `SERVO-NOTES.md` at `/home/ubuntu/workspaces/SERVO-NOTES.md` (outside the repo checkout, but inside the workspace parent). Container CAN read it — it lives at the workspace parent, not a host mount.
+- Notes are authoritative for driving this specific servo. Container paths, measured values, safe-move recipe, gotchas all confirmed.
+
+#### What Happened
+- User reported amperage change but no visible movement from the first session's 5° move (~55 counts). Suspicion: move too small to see, or encoder moved but shaft didn't.
+- Ran safe reads first (no motion): confirmed servo healthy at 4016, torque 0, status 0x0.
+- Ran a single 10° downward move with 200ms telemetry sampling: position changed in real-time (3995 -> 3927 -> 3905), load peaked at 96, settled at 24. User confirmed visible movement.
+- Ran 3× back-and-forth 10° moves: all six legs succeeded at 9.84°/112 counts, zero errors, returned to start exactly. User confirmed all six visible.
+- This was after an unplug + replug — confirms safe-move recipe works cold (RAM defaults, torque off at start).
+
+#### Mistakes / Near-Misses
+- Initial "done" claim (from prior session) was premature — user hadn't seen movement. The 5° move was real (encoder moved 55 counts) but too small to be visually confirmable. Lesson: for first motion validation, use a move large enough to be unambiguous (>=10°), not the minimum the sprint doc suggests.
+- The SERVO-NOTES.md status section claimed Part A code was done. It was — but "done" should mean "user-confirmed visible movement", not just "register changed". 
+
+#### User Preferences
+- User wants to see motion before trusting it. Always ask before commanding motion, and use a visible move size (>=10°) for validation.
+- User confirmed they watched the bench PSU during moves. Continue to ask before motion.
+
+#### What Worked
+- Safe-move recipe (seed goal to present, set accel/speed first, verify goal readback, then move) works reliably including from cold start.
+- 200ms telemetry sampling during the move gives a clear motion trace (position + load + speed + torque) that distinguishes "real move" from "register nudged".
+- Live `print` with `python -u` gives real-time output during moves — essential for watching motion in progress.
+
+#### Guardrails For Next Session
+- `SERVO-NOTES.md` lives at `/home/ubuntu/workspaces/SERVO-NOTES.md` (workspace parent, NOT in the GradientOS checkout). It is readable from the container. Trust it over datasheets for this specific servo.
+- Always move downward (toward 2048). Resting position is ~4016-4072; only ~7° upward headroom.
+- Use >=10° moves for visual validation; 5° is too small to confirm physically.
+- Register `0x45` (current) is not trustworthy on firmware 3.10. Use bench PSU for current readings.
+- Part A docs are now filled in. Part B (HLS3950) is next — need to find the HLS protocol, determine physical interface (TTL vs RS485), and run the same validation sequence.
+
+#### Follow-Ups / Risks
+- PSU current figures still needed (idle/move/stall) — must come from bench PSU readout, not register.
+- HLS3950 protocol entirely unknown — Part B may require logic analyzer capture if no docs exist.
+- The full arm needs 9 servos (IDs 10,20,21,30,31,40,50,60,100); only ID 1 exists on this bench.
+
+#### Jerkiness Diagnosis Session (2026-09-08)
+
+**Root cause found (high confidence):** Trajectory executors stream setpoints at speed=4095 (MAX), accel=0 (MAX). Home button works because it sends a single command at speed=500, accel=500, letting the Feetech servo's internal trapezoidal planner handle the motion. The streaming path bypasses the servo's planner entirely, causing micro-jolts 100×/sec that excite backlash and create oscillation/spring behavior.
+
+**Key code locations:**
+- `trajectory_execution.py:744-746` — open-loop precompute with `ENCODER_RESOLUTION, 0`
+- `trajectory_execution.py:1061` — closed-loop command with `encoder_max, 0`
+- `trajectory_execution.py:1041-1043` — software PID intentionally disabled (commands raw target)
+- `run_controller.py:997` — Home path uses `DEFAULT_SERVO_SPEED=500, DEFAULT_SERVO_ACCEL=500`
+
+**Guardrails for next session:**
+- User wants to work through theories together, not just have fixes applied. Pitch theories, discuss, then implement.
+- The `docs/jerkiness-diagnosis.md` document is the field reference — update it as experiments are run.
+- Experiment 1 (moderate speed/accel) is the one-liner highest-impact test. Do this first when user is ready.
+- Don't change PID gains until after Experiment 1 — current gains (Kp=50-65, Ki=0-1, Kd=10-30) are probably fine for Paradigm A and may be fine for moderate-speed streaming.
+
+**What NOT to do:**
+- Don't enable software PID correction in closed-loop until after testing moderate speed/accel — the comment says it was intentionally disabled "during tuning", so re-enabling without understanding why it was disabled could regress.
+- Don't increase loop frequency above 100 Hz — Python timing jitter makes it counterproductive. If anything, go lower (50 Hz) with moderate speed to let servo interpolate.
+
+#### Saturation Model Refinement (2026-09-08, session 2)
+
+**User challenged Goal Time idea** — correctly: chained per-waypoint trapezoids still stop at every waypoint (v=0 endpoints). Don't pitch per-segment profiles as fixes again; the escape is *profile saturation*, not smarter per-segment profiles.
+
+**Refined model (section 9 of docs/jerkiness-diagnosis.md):**
+- Feetech planner only decelerates within braking distance of the goal.
+- Keep goals perpetually ahead → servo never decelerates → continuous cruise.
+- Three regimes: cap>>stream (stop-go, current bug) / cap≈stream+15% (cruise) / cap<stream (lag, dangerous).
+- The speed register becomes the velocity controller on position-only hardware.
+- User's question also exposed that jog jerkiness is the same mechanism (25 Hz stream, speed=800 cap >> tiny per-step velocity).
+
+**New facts to remember:**
+- STS speed unit ~0.732 rpm/LSB is UNVERIFIED on this bench — needs a calibration move test. Correct per-step caps may be single/low-double-digit register values; check for a minimum usable cap.
+- Present speed register 0x3A (bit 15 = direction) gives velocity feedback — use it for the cap sweep experiment. It's the falsifiable test.
+- A rad/s → speed-register converter does NOT exist in the repo yet. It belongs in the Feetech backend.
+- LeRobot SO-ARM/SO-100 community uses the same STS3215 with streamed positions + moderate speeds — external validation of the saturation approach.
+
+**User preferences reinforced:**
+- Wants theory pitched with mechanisms and falsifiable tests, not just "trust me."
+- Keeps catching over-simplified claims (flat speed=500). Be more careful before pitching fixes — walk through second-order consequences first.
+- Strong preference: all fixes backend-scoped (Feetech only), other servo configs unaffected.
+
+#### Saturation Model Challenge 2 (2026-09-08, session 3)
+
+**User caught the load-bearing assumption:** does a mid-move goal write actually overwrite the in-flight trapezoidal plan, or does the servo finish its plan first? UNKNOWN. I had presented Case A (velocity blend) as established; it is the optimistic branch of a three-way fork.
+
+**The fork (docs/jerkiness-diagnosis.md section 9.4):**
+- A: re-target w/ velocity blend → continuous cruise
+- B: re-target from rest (v=0 re-plan, PID drags velocity) → velocity sawtooth, avg ≈ ½ cap
+- C: queued completion → motion lags one segment, jitter starves queue
+- CRITICAL: "pause at waypoints" under max caps is consistent with ALL THREE. Current symptoms cannot discriminate.
+
+**Gating test (9.4, run before everything else):** mid-move goal rewrite on bench servo (4016→3600 at cap 300/accel 10, rewrite goal to 3400 mid-move, log 0x38/0x3A/moving flag). Outcomes map directly to A/B/C.
+
+**Robustness claim to remember:** velocity-matched caps improve all three outcomes — fix direction safe, tuning fork-dependent (A: cap+headroom; B: cap×2 expect ripple; C: cap=planned, need stream-rate headroom).
+
+**Lessons for pitching theories to this user:**
+- They probe load-bearing assumptions. Present confidence honestly: known / extrapolated / unknown.
+- Fork the hypothesis space explicitly with discriminating experiments BEFORE pitching implementation values.
+- Test order now: 9.4 re-target fork → speed LSB calibration → 9.5 cap sweep → Feetech backend per-step caps.
+
+#### Sprint 08 Created + Stopgap Feasibility (2026-09-08, session 4)
+
+**Sprint state audit (accurate as of today):**
+- sprint-00, 01: complete. sprint-02 Part A (STS3215 protocol): DONE in reality, but its checkbox file still shows all 28 boxes unchecked — the sprint file lags the DEVLOG. Part B (HLS3950): genuinely open, biggest unknown.
+- sprint-03: open (15 boxes) — study GradientOS arch; largely superseded, we've already done deep study for the jerkiness diagnosis; the docs/gradientos/ stubs remain unfilled.
+- sprint-04: open (15) — STS backend in GradientOS (fork/branch setup boxes are stale, we ARE editing the fork in place).
+- sprint-05: open (12) — HLS backend, blocked on sprint-02 Part B.
+- sprint-06: open (15) — paired-joint backlash offset. NOTE: user's reported oscillation is backlash-related; sprint-06 (preload offset on twin motors 20/21, 30/31) is a direct mechanical complement to the motion fix.
+- sprint-07: open (25) — full arm build-out.
+- NEW sprint-08: motion smoothness (created this session).
+
+**Profiled-segment stopgap key insight:** it sidesteps the 9.4 firmware fork entirely — one goal per segment, never rewritten mid-move (rotysquare has 1s pauses between moves, so segments always complete). Only prereq is the speed LSB calibration. This is why it's the recommended immediate action over saturation streaming.
+
+**Sequencing recommendation recorded in sprint-08:** A (LSB cal) → D (stopgap impl) gives smooth paused-trajectories now; B (fork test) → C (cap sweep) unlock continuous-path streaming later. Jog stays streaming either way for now.
+
+**Repo hygiene notes:**
+- feetech-project/TODO.md updated with sprint-08 and corrected sprint-02 status.
+- Sprint-02 checkbox file needs a reality pass (Part A done but unchecked).
+
+#### Sprint Reorg (2026-09-08, session 5)
+
+**User decision:** HLS3950 protocol validation (old sprint-02 Part B) now lives at the START of sprint-05, gating the HLS backend implementation in the same sprint. Sprint 02 is now STS3215-only.
+
+**Rationale worth remembering:** protocol validation and backend implementation for a given servo belong in the same sprint — the user is consolidating by hardware, not by activity type. If a new servo type is added later, expect its protocol validation to be the opening part of ITS backend sprint, not a separate protocol sprint.
+
+**Sprint 08's Part B note:** careful — "Part B" in sprint-08 means the mid-move re-target fork test, NOT HLS (old sprint-02 Part B). Renaming happened to create two different "Part B"s; watch for confusion in future sessions.
+
+#### Sprint 8/9 Split + Stall Data (2026-09-08, session 6)
+
+**User's correction (remember this preference):** keep sprints focused — Sprint 08 = ONE question (can trapezoid planning be interrupted mid-move → pseudo-Dynamixel feasibility), bench-only, no code. The quick fix is a SEPARATE sprint (09) for the immediate future. I had bundled characterization + stopgap implementation into one sprint; user split it. Don't bundle implementation into feasibility studies again.
+
+**Stall current now measured:** 8 W spike (~0.67 A @ 12 V) during manual downward pull on the arm EE, vs ~3.6 W idle. Recorded in STS3215.md. Sprint-02's last open bench item is closed. Note: it's a brief manual-pull spike — a sustained jam against a higher PSU current limit could read higher.
+
+**Sprint map now:**
+- 09 = endpoint-paradigm quick fix (code, immediate, fixes user's jerkiness; flat cap 500/accel 10 ships first, LSB-refined later)
+- 08 = feasibility bench study (A: LSB cal → B: re-target fork 3x + edge probes → C: cap sweep → D: verdict GO/CONDITIONAL/NO-GO)
+- 08's verdict decides: streaming migration for weld/jog (new sprint later) vs endpoint paradigm permanent for Feetech
+
+**Sprint 08 Part B edge probes worth remembering:** high-rate 100 Hz re-targets with cap≈stream velocity (tests A/B under realistic streaming), and mid-move direction reversal (backlash-relevant). Only run these if A or B confirmed.
+
+**Sequencing guidance given to user:** 09 first (uptime), 08 parallel-able (architecture answer). They share only one dependency: Part A LSB calibration refines 09's caps later.
+
+#### Sprint Plan Restructure (2026-09-08, session 7)
+
+**New sprint map (user-directed):**
+- 00, 01 complete. 02 = quick fix (endpoint paradigm). 03 = GradientOS study (crash course written). 04 = paired joints. 05 = pseudo-Dynamixel feasibility (bench only). 06 = full-arm hardening (slimmed). 07 = HLS3950 all-in-one.
+- Complete sprints archived to sprints/archive/ with -COMPLETE suffix instead of deleted (user preference: preserve history, don't destroy).
+
+**Key evidence found:** feetech-project/code/ contains coordinated_home.py + hello_world_all_joints.py driving ALL 8 servo IDs — the arm was brought up organically, which is why old sprint-04/07 (backend, full-arm bring-up) were complete-in-reality but unchecked. Always check code/ and DEVLOG for actual progress before trusting sprint checkboxes.
+
+**Sprint-03 crash course lives in the sprint file** (sprint-03-gradientos-study.md) — covers two-axis selection, startup sequence, command path, motion pipeline paradigms, twin motors, HLS extension path, sharp edges. The docs/gradientos/ stubs (architecture-notes.md, adding-a-servo-family.md) remain the only unfilled items; the crash course can seed them when the user asks.
+
+**Safety flag carried into sprint-06:** servo EEPROM angle limits are UNRESTRICTED (0/4095 confirmed on bench); arm relies on software clamps only. Sprint-06 includes mechanical limit audit + optional EEPROM write (needs human approval per guardrails).
+
+**User's sprint philosophy observed:** sprints should be short/focused, one question or one deliverable each; feasibility studies never bundled with implementation; completed sprints archived not deleted; numbering = priority order (quick fix at 02).
+
+#### Sprint Renumbering v3 (2026-09-08, session 8)
+
+**Final sprint map (user-directed, third restructure today):**
+- 00 setup ✅ | 01 STS protocol ✅ (restored from archive per user request, marked complete in-place) | 02 electronics ✅ (was 01) | 03 study (~90%, crash course) | 04 quickfix (READY, next action) | 05 HLS3950 all-in-one | 06 paired joints | 07 pseudo-Dynamixel feasibility | 08 arm hardening.
+
+**User's hard requirement on sprint-04 (repeated twice — treat as invariant):** the endpoint-paradigm fix must activate ONLY via the backend capability flag. Never keyed off backend-name strings or global constants. Explicit gating-matrix tests required: feetech+gradient0 = active; simulation+any robot = unchanged; no-backend legacy path = unchanged. If future sprints touch motion code, preserve this gating.
+
+**Renumbering hazard learned:** shifting sprint numbers by sed is error-prone when old numbers overlap new ones (02→04 while 05→07 etc.) — always: (1) mv files to tmp names first, (2) fix titles, (3) fix cross-refs per file, (4) rg for stale old filenames/numbers as final gate. The "no stale refs" rg check is now part of the workflow.
+
+**HLS sprint final number is 05** (user asked "switch the HLS sprint to sprint 04" based on the plan where quickfix was 02; after restoring the archive sprint to 01 everything shifted down one, landing HLS at 05, quickfix at 04).
+
+#### Sprint Swap + README Resync (2026-09-08, session 9)
+
+**Final map:** 00 setup ✅ | 01 STS protocol ✅ | 02 study 📖 | 03 electronics ✅ | 04 quickfix ⏳NEXT | 05 HLS | 06 paired | 07 feasibility | 08 hardening.
+
+**New workflow rule:** after ANY sprint renumbering, rg-sweep README.md too — it had drifted to the original 7-sprint plan and wasn't in my reference-fix list until this session. Sweep list is now: sprints/*.md, TODO.md, README.md, docs/**, GradientOS/docs/jerkiness-diagnosis.md.
+
+**Sprint-08 (arm hardening) rationale to remember:** exists because the arm was brought up organically — the safety/operational work a staged bring-up would have done never happened. Five buckets: (1) power bus (8 servos vs URT-1's 6A limit, bench PSU not mountable), (2) udev stable naming + real replug test, (3) joint limits — CRITICAL: servo EEPROM limits confirmed UNRESTRICTED 0/4095, arm relies on software clamps only; mechanical audit + optional EEPROM write (human approval), (4) temperature soak under continuous duty, (5) operator handoff doc. Recommended AFTER sprint-04 so motion is clean before wiring changes (avoid two debugging variables).
+
+#### Sprint 04 Implementation (2026-09-08, session 10)
+
+**Sprint 04 (endpoint-paradigm quick fix) is now IMPLEMENTED in code.** The capability-flag gating pattern from the sprint spec is live:
+
+- `ActuatorBackend.supports_profiled_segments` property defaults to `False` in the ABC → every backend inherits "off" automatically (opt-in only).
+- `FeetechBackend` overrides to `True` → profiled segments active for Feetech only.
+- `SimulationBackend`, `EthercatRTCoreBackend` inherit `False` → dense streaming unchanged.
+- The trajectory executor queries the flag at runtime via `_backend_supports_profiled_segments()` which calls `getattr(backend, 'supports_profiled_segments', False)` — never a string check or global constant. If no backend is active (legacy servo_protocol path), returns False → unchanged.
+
+**Key implementation details to remember:**
+- `plan_profiled_segment(start_q, end_q, per_joint_velocities=None, flat_speed=None)` computes per-joint speed caps: slowest joint (largest |Δq|) gets the flat cap (default 500), others scaled down proportionally so all joints arrive together. Zero-Δq joints get `SPEED_MIN` (30). Flat cap is clamped to [30, 2000]. Fixed moderate accel = 10 (bench safe-move recipe).
+- `_execute_profiled_segment_step(step)` and `_execute_profiled_joint_move_step(step)` send ONE sync_write and then wait (interruptible, 2.0 s default). The wait is conservative because the Goal Time register is unverified; rotysquare's 1 s pauses absorb drift. TODO: read-back polling after Sprint 07 calibrates speed LSB → duration.
+- Weld moves (`step.get("weld_active", False)`) keep dense streaming even on Feetech — the sprint explicitly excludes continuous weld paths (path shape degrades; gated on Sprint 07 verdict).
+- `joint_move` steps use the step's `speed` field as the baseline flat cap override if provided.
+
+**Test coverage (21 tests, all passing):** `tests/test_profiled_segments.py` — capability-flag defaults per backend type, full gating matrix (feetech/sim/no-backend/uninitialized), per-joint cap scaling, speed clamping, endpoint accuracy, weld-move exclusion, execution correctness (one sync_write, global state update).
+
+**Pre-existing test failures (NOT caused by this change):** 6 tests in test_driver, test_protocol, test_planning, test_end_to_end fail with `TypeError: 'NoneType'` because they don't call `robot_config.set_active_robot()` before accessing `utils.SERVO_IDS` etc. These are pre-existing — confirmed by stashing my changes and re-running. Don't mistake them for Sprint 04 regressions.
+
+**Flat cap rationale:** 500 matches the smooth Home move's speed. The sprint spec says a flat conservative cap can ship first and be refined when Sprint 07 Part A calibrates the rad/s → LSB conversion. The `per_joint_velocities` parameter in `plan_profiled_segment` is reserved for that future calibration but not yet used.
+
+**What remains for Sprint 04 to be fully "done":** `move_line` with pauses test, quantitative endpoint accuracy measurement, and decision log entry. The core fix is user-validated — the reported jerkiness symptom is gone. Remaining items are non-blocking refinements.
+
+**PSU observation (2026-09-11 user validation):** ~10 A peak (~120 W @ 12 V) during profiled-segment motion. No streaming baseline was available for comparison. This is relevant to Sprint 08 (arm hardening): the power bus must handle 10 A peaks across 8 servos; the URT-1's 6 A limit may be insufficient for aggressive multi-joint moves. Sprint 08 should measure sustained current, not just peaks.
+
+### 2026-09-11 — Sprint 05: Backend rename (feetech → sts3215) + HLS3950 backend creation
+
+#### Task Summary
+
+- Researched the HLS3950 protocol (the project's biggest hardware unknown) via the Feetech wiki at `wiki.aifitlab.com`. Found full memory table and protocol documentation.
+- Key finding: the HLS3950 uses the same FT-SCS protocol as the STS3215 — same frame format, instruction set, checksum, SYNC_WRITE layout. Register map is very similar with specific differences.
+- Renamed the existing backend from `backends/feetech/` to `backends/sts3215/` and class `FeetechBackend` to `STS3215Backend`, registration name `"feetech"` to `"sts3215"`.
+- Created `backends/hls3950/` with `HLS3950Backend`, registered as `"hls3950"`.
+- Filled the HLS protocol and hardware spec docs from wiki data.
+
+#### Mistakes And Fixes
+
+- Source: `[self]`
+- Mistake: none during this session — the rename and new backend creation went cleanly on the first pass.
+- Detection: tests confirmed — 21/21 profiled-segment tests pass, 6 pre-existing failures unchanged.
+
+#### User Preferences
+
+- New or reinforced preference:
+  - Backend names should use the actual model number (`sts3215`, `hls3950`), not a generic family name (`feetech`). This makes it explicit which servo hardware is active.
+  - User confirmed: "it is definitely the same single wire setup and should work running through the URT-1" — no adapter concern.
+- How it changed execution:
+  - Used `git mv` for the directory rename to preserve history.
+  - Created HLS3950 as a separate backend directory (not extending the STS3215 backend) per user request.
+
+#### What Worked
+
+- Pattern/check that worked:
+  - `sed` bulk renames for print statements (`[Feetech]` → `[STS3215]` / `[HLS3950]`) and class names across driver/protocol/config files.
+  - Copying the sts3215 directory as a base for hls3950, then modifying only the config.py (register map) and keeping protocol.py identical (same frame format).
+  - Online research via wiki.aifitlab.com resolved the protocol question before writing any code — the wiki has full memory table analysis for both STS and HLS servos.
+
+#### Key Technical Knowledge
+
+- The HLS3950 register map differs from STS3215 in these registers:
+  - 0x07 = Sub ID (not on STS)
+  - 0x21 mode 2 = constant current (STS = PWM)
+  - 0x22 = Current loop Kp (STS = Holding torque)
+  - 0x23 = Current loop Ki (STS = Protection time)
+  - 0x28 = Torque switch (0/1/2 only — STS also accepts 128 for calibration)
+  - 0x2C = Target current (STS = PWM open-loop speed)
+  - 0x42 = Moving flag (not on STS)
+  - 0x43 = Target position readback (not on STS)
+- Calibration: HLS3950 uses 0x0B instruction only. The STS3215 torque-switch shortcut (write 128 to 0x28) does NOT work on HLS.
+- Both servos have the same internal trapezoidal profiler, so `supports_profiled_segments = True` for both.
+
+#### Guardrails For Next Session
+
+- Preflight rule:
+  - When renaming a backend, grep for ALL references (Python imports, string literals in run_controller.py, registry config modules, test files, and bench scripts in feetech-project/code/).
+  - The `run_controller.py` angle-limit write gate checks `servo_backend in ("sts3215", "hls3950")` — both serial servo backends need EEPROM angle limit writes. If a third serial backend is added, add it to this tuple.
+  - The simulation backend falls back to `"sts3215"` config module for constants — this is in `run_controller.py:166` and `backends/__init__.py:112`. If the sts3215 config is ever removed or renamed, this fallback must be updated.
+
+#### Follow-Ups / Risks
+
+- Remaining risk or pending check:
+  - The HLS3950 backend has NOT been tested on physical hardware — bench validation (PING, read position, command small move) is the next step.
+  - Default PID gains in hls3950/config.py are copied from STS3215 — will need tuning for the HLS servo.
+  - Historical doc references in sprint files and ARCHITECTURE.md still reference `backends/feetech/` — they're historical records, not code-affecting.
+  - The "Dockerfile rebuild" mentioned in TODO.md refers to the OpenChamber container image needing build-essential/python3-dev/cmake for the IK solver C++ extension — not HLS-specific. Pure Python backend needs no new system packages.
+
+### 2026-09-11 — Sprint 07: Bench experiment scripts written (not yet run)
+
+#### Task Summary
+
+- Wrote all four Sprint 07 bench experiment scripts (Pseudo-Dynamixel feasibility study). No production code changed — bench-only tooling under `feetech-project/code/`.
+
+#### Files Created
+
+- `bench_utils.py` — shared utility: serial setup, bulk telemetry read (11 bytes 0x38–0x42 in one packet for max sample rate), CSV trace writer, safe-move recipe (seed-verify), guardrails (assert_safe_target, downward-only).
+- `part_a_speed_calibration.py` — Part A: sweeps cap {10,30,60,100}, times move completion, computes rpm/LSB, finds motion floor by sweeping downward. Outputs summary CSV.
+- `part_b_midmove_retarget.py` — Part B (decisive): long move 4016→3600, rewrites goal to 3400 mid-cruise, logs at max bulk-read rate (~100+ Hz), auto-classifies A/B/C from velocity trace. 3 trials. Optional `--edges` for high-rate 100 Hz re-target probe + direction-reversal probe.
+- `part_c_cap_sweep.py` — Part C: streams linear move at 100 Hz, sweeps cap {4095,500,100,30,10,floor}, classifies regime (stop-go/cruise/lag) from zero-crossing analysis.
+
+#### Key Technical Decisions
+
+- Used bulk register read (11 bytes from 0x38–0x42) instead of individual register reads to maximize telemetry sample rate. One round-trip captures pos+speed+load+voltage+temp+status+moving.
+- Part B classification is automated: checks velocity continuity around re-target point, detects position reaching initial goal (case C), detects velocity dip (case B). Reports per-trial + overall verdict.
+- Part B `--edges` flag is opt-in: high-rate re-target and direction-reversal probes only run if Part B verdict is A or B. Direction reversal is the only backward-motion test — operator must be present.
+- Part C's stream loop writes goals at 100 Hz but reads telemetry between writes (no explicit pacing needed — serial round-trip naturally paces the loop).
+
+#### Guardrails For Next Session
+
+- Scripts are ready to run but require physical bench hardware. User should run them in order: A → B → C.
+- `RETARGET_DELAY` (0.8s) in Part B may need tuning if the servo reaches the first goal before re-target fires — check the trace.
+- Part C accepts `--floor` from Part A's result; default is 3 if not provided.
+- All traces save to `feetech-project/data/part_{a,b,c}_traces/`. Summary CSVs save to `feetech-project/data/`.
+- After running, the operator should send the CSV traces for analysis. I can parse them and write the verdict + update `docs/jerkiness-diagnosis.md` §9.4-9.5.

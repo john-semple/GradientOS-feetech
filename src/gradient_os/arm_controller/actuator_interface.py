@@ -42,6 +42,29 @@ class ActuatorBackend(ABC):
     """
     
     # =========================================================================
+    # Capabilities (opt-in properties for motion-policy selection)
+    # =========================================================================
+
+    @property
+    def supports_profiled_segments(self) -> bool:
+        """
+        Whether this backend's firmware has an internal trapezoidal profiler
+        that can run a full move segment from a single endpoint command.
+
+        When True, the trajectory executor may collapse dense waypoint streams
+        into ONE goal command per segment (endpoint position + moderate speed/
+        accel caps), letting the firmware profile the whole move — the
+        "Home-button" pattern generalised to all moves.
+
+        Backends that lack an internal profiler (or have not been validated for
+        this usage) MUST return False so the executor keeps dense streaming.
+
+        Returns:
+            bool: True if profiled-segment motion is supported and desired.
+        """
+        return False
+
+    # =========================================================================
     # Initialization & Configuration
     # =========================================================================
     

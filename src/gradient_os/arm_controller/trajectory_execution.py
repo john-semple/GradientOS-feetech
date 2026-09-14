@@ -48,6 +48,34 @@ def _use_backend() -> bool:
     return backend is not None and backend.is_initialized
 
 
+def _backend_supports_profiled_segments() -> bool:
+    """
+    Check if the active backend supports profiled-segment motion.
+    
+    This is the Sprint 04 gating function: it queries the *runtime* backend
+    instance for its `supports_profiled_segments` capability.  If no backend
+    is active (legacy servo_protocol path), returns False — behavior is
+    unchanged (dense streaming).
+    
+    The endpoint paradigm is a property of Feetech-class firmware (internal
+    trapezoidal profiler).  It must NOT change behavior for simulation, HLS,
+    EtherCAT, or any future backend — those keep dense streaming until their
+    own firmware semantics are studied.  Every code path that uses this check
+    queries the flag at runtime via the active backend instance — never a
+    hardcoded backend name or global constant.
+    
+    Returns:
+        bool: True if the active backend supports and desires profiled-segment
+              motion; False otherwise (including no backend active).
+    """
+    backend = _get_backend()
+    return (
+        backend is not None
+        and backend.is_initialized
+        and getattr(backend, 'supports_profiled_segments', False)
+    )
+
+
 def _build_primary_feedback_ids() -> list[int]:
     """
     Build a list of primary servo IDs for feedback (one per logical joint).
@@ -654,6 +682,92 @@ def _plan_high_fidelity_trajectory(cartesian_points: list,
     return final_joint_trajectory
 
 
+def _execute_profiled_segment_step(step: dict) -> None:
+    """
+    Sprint 04 — execute a 'move' step as a single profiled segment.
+    
+    Collapses the dense waypoint path to ONE endpoint command (the last
+    waypoint), using the backend's plan_profiled_segment() helper to compute
+    per-joint speed caps.  The firmware trapezoidal profiler runs the whole
+    segment — the "Home-button" pattern generalised to all moves.
+    
+    Only called when _backend_supports_profiled_segments() is True and the
+    step is not a weld move (weld paths keep dense streaming until Sprint 07).
+    
+    The step's 'duration' (if present) is used as a wait-for-completion
+    timeout; otherwise a conservative default is used.
+    """
+    backend = _get_backend()
+    if backend is None:
+        return
+    
+    joint_path = step['path']
+    if not joint_path:
+        return
+    
+    # Start from the last commanded position; endpoint is the last waypoint.
+    start_q = list(utils.current_logical_joint_angles_rad)
+    end_q = list(joint_path[-1])
+    
+    print(f"[Pi Execute] Profiled segment: {len(joint_path)} waypoints → 1 endpoint command.")
+    
+    commands = backend.plan_profiled_segment(start_q, end_q)
+    backend.sync_write(commands)
+    
+    # Update global state immediately
+    utils.current_logical_joint_angles_rad = end_q
+    
+    # Wait for the firmware to finish the move.  We don't know the exact
+    # duration (that needs the unverified Goal Time register), so we use a
+    # conservative wait.  The subsequent pause step (rotysquare has 1 s pauses)
+    # absorbs any drift.  Make it interruptible.
+    # TODO: replace with read-back polling once Sprint 07 calibrates the
+    # speed LSB → duration conversion.
+    wait_s = float(step.get('duration', 2.0))
+    if wait_s <= 0:
+        wait_s = 2.0
+    end_time = time.monotonic() + wait_s
+    while not utils.trajectory_state["should_stop"] and time.monotonic() < end_time:
+        time.sleep(0.01)
+
+
+def _execute_profiled_joint_move_step(step: dict) -> None:
+    """
+    Sprint 04 — execute a 'joint_move' step as a profiled segment.
+    
+    joint_move is inherently a single endpoint; on Feetech we use
+    plan_profiled_segment() for consistent per-joint cap sizing instead of
+    the flat speed/accel that set_servo_positions() would use.
+    """
+    backend = _get_backend()
+    if backend is None:
+        return
+    
+    target_q = step['target_q']
+    start_q = list(utils.current_logical_joint_angles_rad)
+    
+    print(f"[Pi Execute] Profiled joint_move: → 1 endpoint command.")
+    
+    # Use the step's speed as the baseline cap if provided; plan_profiled_segment
+    # clamps it to the safe range and scales per-joint from there.
+    step_speed = step.get('speed')
+    flat_speed = int(step_speed) if step_speed is not None else None
+    
+    commands = backend.plan_profiled_segment(start_q, list(target_q), flat_speed=flat_speed)
+    backend.sync_write(commands)
+    
+    # Update global state immediately
+    utils.current_logical_joint_angles_rad = list(target_q)
+    
+    # Wait for the move to complete (interruptible).
+    duration = float(step.get('duration', 2.0))
+    if duration <= 0:
+        duration = 2.0
+    end_time = time.monotonic() + duration
+    while not utils.trajectory_state["should_stop"] and time.monotonic() < end_time:
+        time.sleep(0.01)
+
+
 def _trajectory_executor_thread(planned_steps: list[dict], should_loop: bool):
     """
     The target function for the trajectory execution thread. This function
@@ -679,16 +793,29 @@ def _trajectory_executor_thread(planned_steps: list[dict], should_loop: bool):
                 print(f"[Pi Execute] Executing Step {i+1}/{len(planned_steps)} ({step['type']})...")
                 utils.trajectory_state["weld_active"] = bool(step.get("weld_active", False))
                 if step['type'] == 'move':
-                    _execute_joint_path(step['path'], step['freq'])
+                    if _backend_supports_profiled_segments() and not step.get("weld_active", False):
+                        # Sprint 04: collapse dense path to ONE endpoint command
+                        # for non-weld moves on backends with an internal
+                        # trapezoidal profiler (Feetech).  Weld paths keep dense
+                        # streaming until Sprint 07 verdict.
+                        _execute_profiled_segment_step(step)
+                    else:
+                        _execute_joint_path(step['path'], step['freq'])
                 elif step['type'] == 'joint_move':
-                    print(f"[Pi Execute] Moving joints to target configuration and waiting {step['duration']}s.")
-                    servo_driver.set_servo_positions(step['target_q'], step['speed'], 0)
-                    # Update global state immediately
-                    utils.current_logical_joint_angles_rad = step['target_q']
-                    # Make joint_move interruptible with correct timing
-                    end_time = time.monotonic() + step['duration']
-                    while not utils.trajectory_state["should_stop"] and time.monotonic() < end_time:
-                        time.sleep(0.01)  # Check for stop every 10 ms
+                    if _backend_supports_profiled_segments():
+                        # Sprint 04: joint_move is inherently a single endpoint;
+                        # use the profiled-segment path for consistent cap
+                        # sizing on Feetech.
+                        _execute_profiled_joint_move_step(step)
+                    else:
+                        print(f"[Pi Execute] Moving joints to target configuration and waiting {step['duration']}s.")
+                        servo_driver.set_servo_positions(step['target_q'], step['speed'], 0)
+                        # Update global state immediately
+                        utils.current_logical_joint_angles_rad = step['target_q']
+                        # Make joint_move interruptible with correct timing
+                        end_time = time.monotonic() + step['duration']
+                        while not utils.trajectory_state["should_stop"] and time.monotonic() < end_time:
+                            time.sleep(0.01)  # Check for stop every 10 ms
                 elif step['type'] == 'pause':
                     utils.trajectory_state["weld_active"] = False
                     print(f"[Pi Execute] Pausing for {step['duration']} seconds.")

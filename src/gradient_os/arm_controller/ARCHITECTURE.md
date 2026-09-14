@@ -42,8 +42,8 @@ This is achieved through two parallel abstraction layers:
          │                                        │
          ▼                                        ▼
 ┌───────────────────────────────────┐  ┌───────────────────────────────────┐
-│  robots/gradient0/config.py       │  │  backends/feetech/backend.py      │
-│  Gradient0Config(RobotConfig)     │  │  FeetechBackend(ActuatorBackend)  │
+│  robots/gradient0/config.py       │  │  backends/sts3215/backend.py      │
+│  Gradient0Config(RobotConfig)     │  │  STS3215Backend(ActuatorBackend)  │
 │                                   │  │                                   │
 │  • 6 DOF + gripper                │  │  • Feetech STS protocol           │
 │  • Servo IDs: 10,20,21,30,31...   │  │  • 0xFF 0xFF header               │
@@ -107,14 +107,14 @@ arm_controller/
 │   │   ├── __init__.py
 │   │   ├── config.py            # Constants (registers, defaults, telemetry parsing)
 │   │   ├── protocol.py          # Low-level packet functions (INTERNAL)
-│   │   └── backend.py           # FeetechBackend(ActuatorBackend)
+│   │   └── backend.py           # STS3215Backend(ActuatorBackend)
 │   └── simulation/
 │       └── backend.py           # SimulationBackend (in-memory, no hardware)
 │
 ├── actuator_interface.py        # ActuatorBackend ABC + SimulationBackend
 │
 ├── servo_protocol.py            # LEGACY: Feetech-specific protocol
-│                                # TODO: Move to backends/feetech/protocol.py
+│                                # TODO: Move to backends/sts3215/protocol.py
 │                                # Keep as thin dispatcher for backward compat
 │
 ├── servo_driver.py              # High-level servo operations
@@ -289,7 +289,7 @@ class RobotConfig(ABC):
     @property
     @abstractmethod
     def default_servo_backend(self) -> str:
-        """Default servo backend for this robot (e.g., "feetech")."""
+        """Default servo backend for this robot (e.g., "sts3215")."""
         pass
     
     @property
@@ -307,8 +307,8 @@ class RobotConfig(ABC):
 - Some abstraction in place via `__getattr__` for constants
 
 ### Target State
-1. Move `servo_protocol.py` content to `backends/feetech/protocol.py`
-2. Implement `FeetechBackend(ActuatorBackend)` in `backends/feetech/backend.py`
+1. Move `servo_protocol.py` content to `backends/sts3215/protocol.py`
+2. Implement `STS3215Backend(ActuatorBackend)` in `backends/sts3215/backend.py`
 3. `servo_protocol.py` becomes thin dispatcher:
    ```python
    from .backends import registry
@@ -394,8 +394,8 @@ class RobotConfig(ABC):
 | `trajectory_execution.py` | 1092 | ⚠️ NEEDS UPDATE | Uses `servo_protocol` directly |
 | `command_api.py` | 1579 | ⚠️ NEEDS UPDATE | Uses `servo_protocol` directly |
 | `run_controller.py` | 929 | ⚠️ PARTIAL | Sets robot/backend, but uses old modules |
-| `backends/feetech/protocol.py` | 727 | ✅ NEW | Clean Feetech protocol implementation |
-| `backends/feetech/driver.py` | 835 | ✅ NEW | FeetechBackend class (unused) |
+| `backends/sts3215/protocol.py` | 727 | ✅ NEW | Clean Feetech protocol implementation |
+| `backends/sts3215/driver.py` | 835 | ✅ NEW | STS3215Backend class (unused) |
 | `backends/registry.py` | 183 | ⚠️ PARTIAL | Config-only, no backend instances |
 | `actuator_interface.py` | 617 | ⚠️ PARTIAL | ABC defined, SimulationBackend partial |
 | `robot_config.py` | 251 | ✅ DONE | Dynamic loading via set_active_robot() |
@@ -415,7 +415,7 @@ class RobotConfig(ABC):
 
 - [x] **1.2** Update `backends/__init__.py`:
   - Register backend CLASSES (not just config paths)
-  - `BACKEND_CLASSES = {"feetech": FeetechBackend, "simulation": SimulationBackend}`
+  - `BACKEND_CLASSES = {"sts3215": STS3215Backend, "simulation": SimulationBackend}`
 
 - [x] **1.3** Update `run_controller.py` initialization:
   ```python
@@ -576,7 +576,7 @@ class RobotConfig(ABC):
 
 ## Function Migration Reference
 
-### servo_protocol.py → FeetechBackend
+### servo_protocol.py → STS3215Backend
 
 | Old Function | New Method | Notes |
 |--------------|------------|-------|
@@ -594,7 +594,7 @@ class RobotConfig(ABC):
 | `set_servo_acceleration()` | (included in position commands) | |
 | `get_present_servo_ids()` | `backend.get_present_actuator_ids()` | |
 
-### servo_driver.py → FeetechBackend
+### servo_driver.py → STS3215Backend
 
 | Old Function | New Method | Notes |
 |--------------|------------|-------|

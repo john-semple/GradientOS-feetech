@@ -10,10 +10,10 @@
 #   from gradient_os.arm_controller.backends import registry
 #   
 #   # 1. Set active backend (loads config module)
-#   registry.set_active_backend("feetech")
+#   registry.set_active_backend("sts3215")
 #   
 #   # 2. Create and initialize backend instance
-#   backend = registry.create_backend("feetech", robot_config_dict)
+#   backend = registry.create_backend("sts3215", robot_config_dict)
 #   backend.initialize()
 #   registry.set_active_backend_instance(backend)
 #
@@ -46,7 +46,8 @@ _active_backend_instance: Optional['ActuatorBackend'] = None
 
 # Mapping of backend names to their config module paths
 BACKEND_CONFIG_MODULES: dict[str, str] = {
-    "feetech": "gradient_os.arm_controller.backends.feetech.config",
+    "sts3215": "gradient_os.arm_controller.backends.sts3215.config",
+    "hls3950": "gradient_os.arm_controller.backends.hls3950.config",
     # Add more backends here as they're implemented:
     # "dynamixel": "gradient_os.arm_controller.backends.dynamixel.config",
     # "simulation": "gradient_os.arm_controller.backends.simulation.config",
@@ -82,7 +83,7 @@ def register_backend_class(
     This is called from backends/__init__.py to register available backends.
     
     Args:
-        name: Backend name (e.g., "feetech", "simulation")
+        name: Backend name (e.g., "sts3215", "hls3950", "simulation")
         factory: Callable that creates an ActuatorBackend instance.
                  Signature: factory(robot_config: dict, **kwargs) -> ActuatorBackend
         config_module_path: Optional path to config module (for backends with config)
@@ -104,7 +105,7 @@ def set_active_backend(backend_name: str) -> None:
     create_backend() and set_active_backend_instance().
     
     Args:
-        backend_name: Name of the backend (e.g., "feetech", "dynamixel")
+        backend_name: Name of the backend (e.g., "sts3215", "hls3950", "dynamixel")
     
     Raises:
         ValueError: If the backend name is not recognized
@@ -127,7 +128,7 @@ def get_active_backend_name() -> str:
     Get the name of the active servo backend.
     
     Returns:
-        str: Backend name (e.g., "feetech")
+        str: Backend name (e.g., "sts3215")
     
     Raises:
         BackendNotConfiguredError: If no backend has been set
@@ -144,7 +145,7 @@ def get_config() -> 'ModuleType':
     Get the active backend's config module.
     
     Returns:
-        ModuleType: The backend config module (e.g., backends.feetech.config)
+        ModuleType: The backend config module (e.g., backends.sts3215.config)
     
     Raises:
         BackendNotConfiguredError: If no backend has been set
@@ -219,7 +220,7 @@ def create_backend(
     to make it the active backend for all modules.
     
     Args:
-        backend_name: Name of the backend (e.g., "feetech", "simulation")
+        backend_name: Name of the backend (e.g., "sts3215", "hls3950", "simulation")
         robot_config: Dictionary containing robot configuration:
             - servo_ids: List of physical servo IDs
             - logical_to_physical_map: Dict mapping logical joint to physical servo indices

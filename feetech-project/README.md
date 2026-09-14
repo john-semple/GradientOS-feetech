@@ -39,16 +39,21 @@ Paired servos drive the same joint output. Backlash reduction via small angular 
 
 ## Project phases
 
+> Restructured 2026-09-08 — see `TODO.md` for the authoritative sprint plan. Original
+> phases 1-4 (bench, protocol, study, STS backend) completed organically; completed
+> sprints are archived or marked complete in place.
+
 | Phase | Sprint | Description |
 |-------|--------|-------------|
-| 0 | sprint-00 | Setup & documentation |
-| 1 | sprint-01 | Electronics validation — wire test bench safely |
-| 2 | sprint-02 | Servo protocol validation — ping, read, command moves |
-| 3 | sprint-03 | Study GradientOS architecture (clone, read, document) |
-| 4 | sprint-04 | Implement STS3215 backend in GradientOS |
-| 5 | sprint-05 | Implement HLS3950 backend in GradientOS |
+| 0 | sprint-00 | Setup & documentation ✅ |
+| 1 | sprint-01 | STS3215 protocol validation ✅ (complete, marked in place) |
+| 2 | sprint-02 | Study GradientOS architecture (AI crash course written) 📖 |
+| 3 | sprint-03 | Electronics validation — test bench wiring ✅ |
+| 4 | sprint-04 | Endpoint-paradigm motion quick fix (Feetech-gated) ⏳ NEXT |
+| 5 | sprint-05 | HLS3950 protocol validation + backend (all-in-one) |
 | 6 | sprint-06 | Paired-servo joint model with backlash offset |
-| 7 | sprint-07 | Full 6DOF arm config + scale |
+| 7 | sprint-07 | Pseudo-Dynamixel feasibility study (bench only) |
+| 8 | sprint-08 | Full-arm hardening — power, udev, limits, safety |
 
 ## Key open questions
 
@@ -82,15 +87,18 @@ GradientOS/                         ← this fork (john-semple/GradientOS-feetec
         decision-log.md             # ADR-style dated decisions + rationale
     sprints/
       sprint-00-setup.md
-      sprint-01-electronics.md
-      sprint-02-servo-protocol.md
-      sprint-03-gradientos-study.md
-      sprint-04-sts-backend.md
-      sprint-05-hls-backend.md
+      sprint-01-sts3215-protocol.md   # complete, in place
+      sprint-02-gradientos-study.md
+      sprint-03-electronics.md
+      sprint-04-endpoint-paradigm-quickfix.md
+      sprint-05-hls3950.md
       sprint-06-paired-joints.md
-      sprint-07-full-arm.md
-    code/                           # empty until Phase 2
-  src/gradient_os/arm_controller/backends/feetech/  ← existing GradientOS Feetech stub
+      sprint-07-pseudo-dynamixel-feasibility.md
+      sprint-08-full-arm-hardening.md
+      archive/
+        sprint-04-sts-backend-COMPLETE.md
+    code/                           # bench validation scripts (hello_world, coordinated_home, telemetry)
+  src/gradient_os/arm_controller/backends/sts3215/  ← existing GradientOS Feetech stub
   docs/feetech_sts3215_instructions.md              ← existing GradientOS Feetech docs
 ```
 

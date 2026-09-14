@@ -205,7 +205,7 @@ class RobotConfig(ABC):
         Each robot MUST declare its servo backend explicitly.
         
         Returns:
-            str: Backend name (e.g., "feetech", "dynamixel")
+            str: Backend name (e.g., "sts3215", "hls3950", "simulation")
         """
         pass
     
