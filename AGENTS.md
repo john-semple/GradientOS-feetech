@@ -193,7 +193,31 @@ Optional extras:
 
 -   Vision AI stack (YOLO + Torch): `uv pip install -e '.[ai]'`
 -   Dataset tooling (LeRobot export helpers): `uv pip install -e '.[datasets]'`
--   Dev/test utilities (pytest, pre-commit): `uv pip install -e '.[dev]'`
+-   Dev/test utilities (pytest, pre-commit, httpx): `uv pip install -e '.[dev]'`
+    — **required for the API endpoint tests** (`tests/test_api_endpoints.py` needs
+    `httpx` for FastAPI's TestClient; without it the whole file silently skips)
+
+### Running tests (the three gates)
+
+Run all three before considering frontend or backend work done:
+
+```bash
+# 1. Backend test suite (repo root, venv active) — includes API endpoint tests
+python -m pytest tests/
+
+# 2. Web UI unit/component tests (from web-ui/)
+npm run test:run
+
+# 3. Web UI build check (from web-ui/)
+npm run build
+```
+
+Notes:
+- `pytest` treats module-level `importorskip` skips silently — always check the
+  skip count in the summary (expect **0 skipped**; investigate any skip with `-rs`).
+- Web UI tests must import components directly, never via `App.tsx` (Three.js
+  crashes jsdom). Patterns and rules documented in `web-ui/README.md` § Testing
+  and `tests/README.md`.
 
 Next steps:
 

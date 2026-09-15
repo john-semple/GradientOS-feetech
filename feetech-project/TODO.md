@@ -20,23 +20,30 @@
 
 ## Next action
 
-1. **Sprint 04b (Endpoint-Paradigm Quick Fix)** — USER-VALIDATED. Smooth motion confirmed on physical arm (rotysquare). ~10 A PSU peak (~120 W @ 12 V). Code complete: 21 gating tests pass. Remaining items: `move_line` with pauses test, quantitative endpoint accuracy measurement, decision log entry.
-2. **Sprint 07 (Pseudo-Dynamixel Feasibility)** — bench-only study (speed LSB calibration + mid-move re-target fork test + cap sweep); can run before or alongside Sprint 04b; its verdict decides the long-term streaming architecture for weld paths and jog.
-3. Requires: GradientOS Python environment set up in container (Dockerfile rebuild pending — see Cursor handoff instructions)
+1. **Sprint 10 (Smooth Streaming Executor)** — up next. Migrate motion executors
+   from arrive-and-stop waypoint streaming to continuous setpoint streaming with
+   50 ms lookahead, wrapped entirely inside the backend. Exploits Case A firmware
+   behavior measured in Sprint 07. See `sprints/sprint-10-smooth-streaming-executor.md`.
+2. **Sprint 09 (GUI Improvements)** — after Sprint 10. Jog controls, calibration
+   UI, config selector. Unblocked by Sprint 08b (test infra) complete. See
+   `sprints/sprint-09-gui-improvements.md` for the full plan and safety rule
+   (arm powered off during calibration-UI build; human present for first
+   calibration/EEPROM runs).
+3. **Sprint 05 (HLS3950)** — in progress. Servos bench-validated, not yet in the
+   arm. Remaining: robot config, multi-servo test, app switching, decision log.
 
-## Sprint plan (restructured 2026-09-14)
+## Sprint plan (restructured 2026-09-15)
 
 | Sprint | File | Status | Description |
 |--------|------|--------|-------------|
-| 04b | `sprint-04b-endpoint-paradigm-quickfix.md` | ✅ User-validated (smooth) | **Quick fix: endpoint-paradigm motion** — one goal per segment, strictly gated by `supports_profiled_segments` backend capability (Feetech only; all other backends unaffected). Code implemented, 21 gating tests pass, user-validated on physical arm (smooth motion, ~10 A PSU peak). Remaining: `move_line` test, endpoint accuracy measurement, decision log |
-| 05 | `sprint-05-hls3950.md` | 📖 In progress | **HLS3950: protocol validation + backend** — protocol confirmed (FT-SCS, same family as STS3215), backend implemented and bench-validated (1 servo: PING, read, move, SYNC_WRITE, SYNC_READ, profiled segment). Critical fix: 0x2C = Target Current on HLS, writing 0 disables motor — SYNC_WRITE layout differs from STS. Remaining: robot config, multi-servo test, app switching, decision log |
-| 06 | `sprint-06-paired-joints.md` | ⏸ Not started | Paired-servo joint model with backlash offset (twin motors 20/21, 30/31) |
-| 07 | `sprint-07-pseudo-dynamixel-feasibility.md` | ✅ Data-complete 2026-09-14 | **Feasibility study (bench only, no code):** can STS3215 trapezoid planning be interrupted/re-targeted mid-move (pseudo-Dynamixel streaming)? Verdict: GO (Case A). Remaining: verdict write-up + diagnosis doc update (desk work) |
+| 05 | `sprint-05-hls3950.md` | 📖 In progress | **HLS3950: protocol validation + backend** — protocol confirmed (FT-SCS, same family as STS3215), backend implemented and bench-validated (1 servo: PING, read, move, SYNC_WRITE, SYNC_READ, profiled segment). Servos work but not yet in the arm. Remaining: robot config, multi-servo test, app switching, decision log |
+| 06 | `sprint-06-paired-joints.md` | ⏸ Deferred | Paired-servo joint model with backlash offset (twin motors 20/21, 30/31) — saved for later |
 | 08 | `sprint-08-full-arm-hardening.md` | ⏸ Not started | Full-arm hardening: power bus, udev stability, joint-limit verification, temperature soak, operator handoff doc |
-| 08b | `sprint-08b-test-infrastructure.md` | ⏸ Not started | Test infrastructure baseline (prerequisite for Sprint 09) |
-| 09 | `sprint-09-gui-improvements.md` | ⏸ Not started | GUI improvements: jog controls, calibration UI, config selector |
-| 10 | `sprint-10-smooth-streaming-executor.md` | ⏸ Ready to start | Smooth streaming executor (Case A setpoint streaming) |
-| 11 | `sprint-11-reactive-motion.md` | 💤 Hypothetical | Reactive motion / obstacle avoidance (depends on 10 + vision stack) |
+| 08b | `sprint-08b-test-infrastructure.md` | ✅ Complete 2026-09-14 | Test infrastructure baseline: vitest suite for web UI (8 smoke tests + fetch mock), backend suite repaired (57 passed / 0 skipped — was 6 failed + whole API file silently skipped due to missing httpx). Unblocks Sprint 09. |
+| 09 | `sprint-09-gui-improvements.md` | ⏸ Not started (after 10) | GUI improvements: jog controls, calibration UI, config selector |
+| 10 | `sprint-10-smooth-streaming-executor.md` | ⏸ **Up next** | Smooth streaming executor (Case A setpoint streaming) — supersedes 04b endpoint paradigm |
+| 11 | `sprint-11-automated-tool-change.md` | ⏸ Not started | Automated tool change system: coupler design, tool rack, change sequence, tool-aware motion |
+| 12 | `sprint-12-reactive-motion.md` | 💤 Hypothetical | Reactive motion / obstacle avoidance (depends on 10 + vision stack) |
 
 ### Archived (complete)
 
@@ -45,17 +52,20 @@
 - `sprints/archive/sprint-02-gradientos-study-COMPLETE.md` — GradientOS architecture study
 - `sprints/archive/sprint-03-electronics-COMPLETE.md` — Electronics validation
 - `sprints/archive/sprint-04-sts-backend-COMPLETE.md` — STS3215 backend in GradientOS
+- `sprints/archive/sprint-04b-endpoint-paradigm-quickfix-COMPLETE.md` — Endpoint-paradigm quick fix (smooth motion)
+- `sprints/archive/sprint-07-pseudo-dynamixel-feasibility-COMPLETE.md` — Pseudo-Dynamixel feasibility study (verdict: GO)
 
 ### Sprint ordering / dependencies
 
 ```
-04b (quick fix, Feetech-gated) ─┐ motion smooth now
-07 (feasibility bench study) ───┤ verdict decides long-term streaming
-                                └──▶ 10 (saturation streaming for weld/jog)
-06 (paired joints) ── independent; complements 04b mechanically (backlash preload)
-08 (arm hardening) ── after 04b; power/limits/safety
-08b (test infra) ── prerequisite for 09
-05 (HLS3950) ──────── independent; bench + backend work for the HLS servo line
+10 (streaming executor) ── up next; supersedes 04b; unifies all motion
+09 (GUI improvements) ──── after 10; jog/calibration/config UI on the 08b test base
+08b (test infra) ──────── ✅ done 2026-09-14; prerequisite for 09
+11 (tool change) ──────── after 08 + 10; needs precise repeatable motion
+06 (paired joints) ────── deferred; complements motion mechanically (backlash preload)
+08 (arm hardening) ────── not started; power/limits/safety
+05 (HLS3950) ──────────── in progress; bench + backend, not in arm yet
+12 (reactive motion) ──── hypothetical; depends on 10 + vision stack
 ```
 
 ## Blocked items

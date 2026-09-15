@@ -31,6 +31,44 @@ Use this file as persistent, repo-local execution memory.
 
 ## Session Entries
 
+### 2026-09-14 (session 2) - Sprint 08b doc pass: httpx silent-skip discovery
+
+- **Critical lesson (the biggest of this sprint)**: `pytest.importorskip` at module
+  level fails SILENTLY. `tests/test_api_endpoints.py` skipped entirely because
+  httpx was missing from the venv — collecting as one harmless-looking "1 skipped"
+  in the summary. I misread that as "intentional hardware-only skip" and reported
+  the suite green. **Always run `pytest -rs` or investigate ANY skip count > 0.
+  A skip can hide a whole untested subsystem.** (The user's own AGENTS.md even had
+  this warning written into it afterwards — this is exactly the failure mode the
+  "expect 0 skipped" note guards.)
+- **Mistakes made (avoid repeating)**:
+  - While updating docs, I checked off the "audit endpoint coverage" task as if it
+    had been done, then realized I'd never actually run the audit. Doing the audit
+    is what surfaced the httpx problem. Don't mark a task done because it "should
+    have been covered" — verify first.
+  - Wrote 4 test assertions against my assumptions of endpoint behavior instead of
+    reading the handler code first. All 4 were wrong (REST → CSV not literal;
+    rotate is relative; float serialization; /health shape). Tests written against
+    assumed behavior prove nothing — read the handler, then assert what it does.
+  - In tests/README.md editing, my edit accidentally REPLACED the test_end_to_end.py
+    description instead of adding a new one (oldString matched the wrong entry).
+    After structural edits, grep for the surrounding entries to confirm nothing
+    was consumed.
+- **Guardrails established**:
+  - httpx is required for the API test file and is part of `[dev]` extra. New venvs
+    must `uv pip install -e '.[dev]'` or the API tests silently vanish.
+  - AGENTS.md now documents the three test gates + the 0-skipped expectation.
+  - When endpoints change signatures (e.g. plan_preview_trajectory_points gained
+    `sections`), their mocks in test_api_endpoints.py must be updated in the same
+    commit — otherwise the mock rotted silently while skipped.
+- **Verified facts**:
+  - `/control/rest` sends a 6-float joint-angle CSV command, not the literal "REST".
+  - `/control/rotate` reads current orientation then writes SET_ORIENTATION with
+    axis+angle (relative, not absolute).
+  - `/health` returns {status, detail, controller:{host, port}}.
+  - Final backend suite: 57 passed, 0 skipped (31 → 57 because the 26-test API file
+    now actually runs).
+
 ### 2026-09-14 - Sprint 08b: Test infrastructure baseline (vitest + backend suite repair)
 
 - **Context**: Implemented Sprint 08b as prerequisite for Sprint 09 (GUI improvements). User runs servo bench tests directly over USB in parallel; verified the test work touches no serial/USB paths (frontend-only + fully-mocked pytest).
@@ -2397,3 +2435,7 @@ This is the GO outcome for saturation streaming. Details:
 - Cross-sprint dependency: `replace_remaining_path` on the streaming handle is specced in 11 but noted as buildable in 10.
 - TODO.md updated: sprint-07 open questions resolved; post-07 sprint table added. Numbering continues at 10 (no renumbering — session lesson held).
 - STILL PENDING (desk work, no bench): diagnosis §9.4/9.5 update with measured results, sprint-07 checkbox file update, decision log entries. These are prerequisites for Sprint 10 implementation start but not for its design review.
+
+#### Sprint 07 docs complete (2026-09-14)
+
+All three doc surfaces updated in one pass: sprint-07 checkbox file (COMPLETE/GO banner, evidence + auto-classifier caveats + supersession notes), diagnosis §9.3-9.5/§10.6 (fork resolved, regime map in, LSB "both right different shafts" resolution), protocol doc (0x3A encoding row + new mid-move-rewrite section). Numbers cross-checked against traces. Two probes deliberately unchecked with supersession notes — a new model of "done" for this repo: superseded items stay unchecked but annotated, so checkbox counts alone never mislead. Sprint 10 is fully unblocked (docs + calibration + design all current).

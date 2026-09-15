@@ -118,7 +118,7 @@ Only registers confirmed on this servo. `0x28`-`0x2F` are **RAM** (cleared on po
 | `0x2C` | word | Goal time | (not exercised on this bench) |
 | `0x2E` | word | Goal speed | Speed limit. See measured behavior below before assuming units. |
 | `0x38` | word | Present position | 0-4095, centre 2048. Read-only. |
-| `0x3A` | word | Present speed | Direction-encoded speed. For the downward bench moves in Sprint 07, values near `32768 - magnitude` were observed; decode with care. |
+| `0x3A` | word | Present speed | **Same units as goal cap `0x2E`** (~0.088 deg/s per LSB). Bit 15 = direction (SET = decreasing counts); magnitude = `raw & 0x7FFF`. Quantized in steps of 50. NOT two's-complement. |
 | `0x3C` | word | Present load | Direction bit `0x400`, magnitude `0x3FF` (0-1023). |
 | `0x3E` | byte | Input voltage | value / 10 = volts (e.g. 120 = 12.0 V). |
 | `0x3F` | byte | Temperature | °C. |
@@ -172,6 +172,49 @@ Interpretation: for Sprint 07 Part B, avoid caps below `50` if the goal is to
 study planner behavior rather than the firmware's minimum-speed clamp. Use cap
 `300` as planned for the mid-move re-target fork test, and interpret `0x3A`
 using the observed direction encoding instead of a plain signed integer.
+
+**Update (2026-09-14, Parts B/C/D + trace cross-analysis):** the speed scale and
+the `0x3A` encoding are now fully resolved:
+
+- **`0x2E` (goal cap) and `0x3A` (present speed) are the same units.** During cruise
+  the present-speed plateau decodes to *exactly* the commanded cap (100→100,
+  200→200, 300→300 across hundreds of samples).
+- **LSB scale ≈ 0.088 deg/s** (output shaft), consistent across caps 50-300 and
+  the floor. The documented `0.732 rpm/LSB` is the **motor shaft** value:
+  output-shaft 0.0147 rpm/LSB × ~50:1 gearbox ≈ 0.73 rpm/LSB at the motor.
+- **`0x3A` encoding: bit 15 = direction flag (SET = decreasing counts), low 15
+  bits = magnitude.** Decode `mag = raw & 0x7FFF`; NOT two's-complement (a signed
+  parse of raw 32868 gives −2868: wrong magnitude and wrong sign). The register
+  quantizes in steps of 50 LSB (~4.4 deg/s).
+- **Direction-reversal behavior (Part D sinusoid):** natural deceleration into
+  the extreme, ~0.15 s dwell at the sine's own zero-velocity point, smooth
+  re-acceleration. No firmware reversal artifacts; gear-backlash pause not
+  visible in telemetry.
+
+## Mid-move goal rewrites (Sprint 07 Part B verdict — measured 2026-09-14)
+
+**Firmware semantics: CASE A — velocity-continuous blend.** Writing a new goal
+while cruising aborts the current profile and re-plans from the servo's present
+position *and velocity*. Measured 3/3 trials: speed held 300→300 across a
+mid-cruise goal rewrite (retarget at t≈0.60 s), zero stops, single continuous
+cruise through both goals, arrival within 1-2 counts.
+
+Implications for streaming control:
+
+- Dense position streaming is fully viable: goals may be rewritten at 100+ Hz
+  mid-move; the servo blends each rewrite into the running profile.
+- On stream interruption the servo decelerates to the last written goal and
+  stops there — position mode is inherently fail-safe (no runaway).
+- Regime map for streamed moves (Part C, stream demand ~133 counts/s):
+  cap ≥ demand → continuous cruise (error 1-2 counts); cap < demand →
+  progressive lag (cap 50 = firmware floor: 38% undershoot). No stop-go regime
+  occurs at any cap when the goal stream is smooth and dense — stop-go is a
+  property of arrive-and-stop segment structure, not of the caps.
+- Design recipe: cap ≈ 2× peak velocity demand (clamp [100, 2000]), accel
+  register 10, goals streamed dense with ~50 ms lookahead.
+
+Traces: `feetech-project/data/part_b_traces/`, `part_c_traces/`,
+`part_d_sinusoid/20260914_153114/`.
 
 ## Critical safety behaviours (measured)
 

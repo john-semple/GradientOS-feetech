@@ -91,7 +91,7 @@ def patch_send(monkeypatch):
             return None
 
         @staticmethod
-        def plan_preview_trajectory_points(points, preview_name="__planner_preview__", weld_metadata=None):
+        def plan_preview_trajectory_points(points, preview_name="__planner_preview__", weld_metadata=None, sections=None):
             if not points:
                 raise ValueError("no points")
             body = dict(planner_payload)
@@ -166,6 +166,87 @@ def test_control_stop(client):
     resp = client.post("/control/stop")
     assert resp.status_code == 200
     assert resp.json()["detail"] == "ACK,STOP"
+
+
+def test_control_rest(client):
+    resp = client.post("/control/rest")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    # REST sends the rest-pose joint angles as a CSV command (not "REST")
+    sent = client.command_calls[-1][0]
+    assert len(sent.split(",")) == 6  # six joint angles
+
+
+def test_control_move_line_relative(client):
+    resp = client.post(
+        "/control/move-line-relative",
+        json={"dx": 0.01, "dy": 0.02, "dz": 0.03, "speed_multiplier": 1.5, "closed": True},
+    )
+    assert resp.status_code == 200
+    sent = client.command_calls[-1][0]
+    assert sent.startswith("MOVE_LINE_RELATIVE,0.01,0.02,0.03")
+
+
+def test_control_rotate(client):
+    resp = client.post("/control/rotate", json={"axis": "roll", "angle_deg": 15.0})
+    assert resp.status_code == 200
+    # Rotate reads current orientation (GET_ORIENTATION → mock RPY 10/20/30)
+    # then writes SET_ORIENTATION with the axis value incremented by angle_deg.
+    sent = client.command_calls[-1][0]
+    assert sent.startswith("SET_ORIENTATION,")
+    assert float(sent.split(",")[1]) == pytest.approx(25.0)  # 10 + 15
+
+
+def test_control_set_gripper(client):
+    resp = client.post("/control/set-gripper", json={"angle_deg": 90.0})
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    assert client.command_calls[-1][0] == "SET_GRIPPER,90.0"
+
+
+def test_control_set_orientation(client):
+    resp = client.post("/control/set-orientation", json={"roll": 0.0, "pitch": 10.0, "yaw": 20.0})
+    assert resp.status_code == 200
+    assert client.command_calls[-1][0] == "SET_ORIENTATION,0.0,10.0,20.0"
+
+
+def test_control_jog_endpoints(client):
+    resp = client.post("/control/jog/start")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    assert client.command_calls[-1] == ("JOG_START", 1.0, False)
+
+    resp = client.post("/control/jog/stop")
+    assert resp.status_code == 200
+    assert client.command_calls[-1] == ("JOG_STOP", 1.0, False)
+
+    resp = client.post(
+        "/control/jog/velocity",
+        json={"vx": 0.1, "vy": 0, "vz": 0, "v_roll": 5, "v_pitch": 0, "v_yaw": 0},
+    )
+    assert resp.status_code == 200
+    # Values are float()-formatted (e.g. "0.1,0.0,0.0,5.0,0.0,0.0")
+    sent = client.command_calls[-1][0]
+    assert sent.startswith("SET_JOG_VELOCITY,0.1,")
+    vals = [float(v) for v in sent.split(",")[1:]]
+    assert vals == pytest.approx([0.1, 0.0, 0.0, 5.0, 0.0, 0.0])
+
+    resp = client.post("/control/jog/deadman", json={"enabled": True})
+    assert resp.status_code == 200
+    assert client.command_calls[-1][0] == "SET_JOG_DEADMAN,true"
+
+    resp = client.post("/control/jog/debug", json={"enabled": False})
+    assert resp.status_code == 200
+    assert client.command_calls[-1][0] == "SET_JOG_DEBUG,false"
+
+
+def test_health(client):
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    # Health also reports the controller target it would probe
+    assert "controller" in body
 
 
 def test_control_wait_for_idle(client):

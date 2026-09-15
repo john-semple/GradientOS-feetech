@@ -325,14 +325,13 @@ A flat `speed=500` is probably still far above actual planned joint velocities
 
 1. Compute per-step joint velocities from the planned dense path (numerical
    differentiation — the path is already dense, so this is trivial).
-2. Convert rad/s → STS speed register LSB. The STS speed unit was commonly documented as
-   **~0.732 rpm/LSB**, but Sprint 07 Part A refuted that as a direct interpretation on
-   this bench. The 2026-09-14 ID `1` test found an effective low-speed floor around cap
-   `50`: caps `1`, `2`, `5`, `10`, `30`, and `50` all moved at roughly `5 deg/s`.
-   Above that floor, measured position-timed speeds were about `9.0 deg/s` at cap `100`,
-   `17.2 deg/s` at cap `200`, and `22.9 deg/s` at cap `300` (about `0.013-0.015
-   rpm/LSB` over this short-move setup). Treat the conversion as empirical and
-   Feetech-firmware-specific, not a datasheet constant.
+2. Convert rad/s → STS speed register LSB. **Measured 2026-09-14 (Sprint 07 Part A):** the
+    speed register LSB is ≈ **0.088 deg/s** on the output shaft, and `0x2E` (goal cap) and
+    `0x3A` (present speed) share the same units — the cruise plateau decodes to exactly
+    the commanded cap. The commonly documented "~0.732 rpm/LSB" is the **motor-shaft**
+    value (output-shaft 0.0147 rpm/LSB × the ~50:1 gearbox ≈ 0.73). Both numbers were
+    "right"; they describe different shafts. Effective low-speed floor: **cap 50**
+    (caps 1-50 all command ~5 deg/s — the firmware minimum-speed clamp).
 3. Add ~10-20% headroom so the servo never quite catches the stream.
 4. Set accel register to a moderate fixed value (bench safe-move recipe uses 10).
 
@@ -340,55 +339,95 @@ This conversion is **Feetech-specific** and belongs in the Feetech backend
 (config + a rad/s→register helper), exposed to the shared executor as a backend
 capability. Backends with real velocity feedforward (future EtherCAT/Dynamixel) ignore it.
 
-### 9.4 The gating unknown: mid-move goal acceptance semantics
+### 9.4 The gating unknown: mid-move goal acceptance semantics — **RESOLVED: CASE A**
 
-> The saturation model in 9.2 rests on an UNVERIFIED firmware assumption: that writing a
-> new goal mid-move re-plans from the servo's current state. Three candidate firmware
-> behaviors exist, and the observed "pause at waypoints" symptom is consistent with ALL
-> of them (with max caps, re-target-from-rest and queued completion both look like
-> instant-completion-then-idle too). This must be measured before the cap sweep.
+> **MEASURED 2026-09-14 (Sprint 07 Part B, bench servo ID 1): the firmware is CASE A —
+> velocity-continuous blend. 3/3 consistent trials.** The saturation model's core
+> assumption is confirmed: writing a new goal mid-move re-plans from the servo's current
+> position AND velocity. Goals rewritten mid-cruise blend into the running profile with
+> no dip, no stop, and no queued completion.
+>
+> Evidence (traces in `feetech-project/data/part_b_traces/`): retarget fired mid-cruise
+> at t≈0.60 s; present speed (`0x3A`) held 300→300 across the rewrite (min 250 = the
+> register's 50-LSB quantization step, not a dip); zero full stops between rewrite and
+> arrival; single continuous cruise through both goals; final arrival within 1-2 counts.
 
 | Behavior | Mid-move goal write | Saturation regime result | Tuning consequence |
 |---|---|---|---|
-| **A: re-target w/ velocity blend** | Aborts profile, re-plans from current pos+vel | Continuous cruise | Cap = planned velocity + headroom |
-| **B: re-target from rest** | Re-plans trapezoid assuming v=0; PID drags velocity to new reference | Velocity sawtooth at stream rate, avg ≈ ½ cap | Cap ≈ 2× planned velocity; ripple is expected, PID-mediated |
-| **C: queued completion** | Finishes current plan first | Motion lags one segment; jitter starves queue → micro-stops | Cap = planned velocity; needs stream-rate headroom |
+| **A: re-target w/ velocity blend** ✅ **CONFIRMED** | Aborts profile, re-plans from current pos+vel | Continuous cruise | Cap = planned velocity + headroom |
+| B: re-target from rest — refuted | Re-plans trapezoid assuming v=0; PID drags velocity to new reference | Velocity sawtooth at stream rate, avg ≈ ½ cap | (would have been) Cap ≈ 2× planned velocity; ripple expected |
+| C: queued completion — refuted | Finishes current plan first | Motion lags one segment; jitter starves queue → micro-stops | (would have been) stream-rate headroom needed |
 
-Robustness: velocity-matched caps improve outcomes in all three cases, so the fix
-direction is safe — but the real case determines tuning (cap multiplier, headroom,
-expected ripple). This test GATES the cap sweep.
+Bench protocol as executed (single servo, guardrails: goals relative to actual rest
+position ~3900, downward-only, safe-move recipe, PSU watched):
 
-**Bench protocol (single servo, existing guardrails — bench servo ID 1, near 4016, move downward):**
+1. Command a long move: start → start−296 counts, speed cap 300, accel 10.
+2. Mid-cruise (t≈0.60 s, position ≈ start−140, `0x3A` decoded ≈ 300), rewrite goal to
+   start−516.
+3. Log `0x38`, `0x3A`, moving flag at ~300 Hz (11-byte bulk read, one transaction/sample).
 
-1. Command a long move: goal 4016 → 3600, speed cap 300, accel 10 (~2 s travel).
-2. Mid-move (while `0x3A` shows clear nonzero velocity, position ≈ 3800), rewrite goal to 3400.
-3. Log `0x38` (position), `0x3A` (present speed), moving flag (telemetry block 2 @ `0x41`).
+Interpretation (as measured):
+- Velocity continuous, no dip, old goal never stopped at → **Case A** ✅
+- (Not observed: velocity dip toward zero then re-acceleration → would have been Case B)
+- (Not observed: full stop at old goal, then second move → would have been Case C)
 
-Interpretation:
-- Velocity continuous, no dip, never reaches old goal → **Case A** (saturation works as pitched).
-- Velocity dips toward zero, re-accelerates, old goal not reached → **Case B** (cap ×2, expect ripple).
-- Servo fully stops at old goal first, then proceeds → **Case C** (queuing confirmed; stream-rate headroom needed).
+**Consequence:** the tuning recipe for saturation streaming is the simple one —
+cap = planned per-joint velocity + headroom (≈2× demand per Part C), accel moderate (10),
+goals streamed dense and smooth with lookahead. No sawtooth ripple to design around;
+no queue starvation to budget for. Implementation is Sprint 10.
 
-### 9.5 Falsifiable bench test (uses existing telemetry)
+### 9.5 Falsifiable bench test — **EXECUTED 2026-09-14 (Sprint 07 Part C): regime map measured**
 
-Present speed register (`0x3A`) provides per-servo velocity feedback, but Sprint 07
-Part A observed direction-encoded values near `32768 - magnitude` during downward
-bench moves. Decode `0x3A` from logged traces with this in mind rather than assuming a
-plain signed integer. Test protocol:
+Present speed register (`0x3A`) provides per-servo velocity feedback. **Encoding measured
+(Part A + Part B):** bit 15 = direction flag (SET = decreasing counts / "downward"),
+low 15 bits = magnitude in the SAME units as the goal speed cap (`0x2E`). NOT
+two's-complement — decode with `raw & 0x7FFF` for magnitude, bit 15 for direction. The
+register quantizes in steps of 50 LSB (~4.4 deg/s); sub-50 dips are invisible in `0x3A` —
+use position differencing (50 ms window → ~1.8 deg/s resolution) for fine work.
 
-1. Stream a known linear move at 100 Hz.
-2. Sweep the speed cap: {4095, 500, 300, 100, 50} while logging `0x3A` at max feasible
-   read rate.
-3. Classify each run from the velocity trace: stop-go (velocity zero-crossings at stream
-   rate) vs. continuous cruise (velocity ≈ constant, matches planned velocity) vs. lag
-   (velocity below plan, position error growing).
-4. The cap where velocity transitions from stop-go to cruise is the design point; the
-   value where lag appears is the floor. Do not spend Part C time below cap `50` unless
-   deliberately documenting the measured minimum-speed clamp.
+Test protocol as executed:
 
-This turns the saturation theory into a measured curve: cap value vs. achieved velocity
-smoothness. **Run the mid-move re-target test (9.4) first** — its result selects the cap
-multiplier and headroom used in this sweep.
+1. Stream a known linear move (400 counts / 3 s ≈ 133 counts/s demand) at 100 Hz goal
+   writes (~160 Hz achieved with reads interleaved on the CH340 bus).
+2. Sweep the speed cap: {4095, 500, 200, 100, 50} while logging `0x3A` at ~300 Hz
+   (bulk read).
+3. Classify each run from the velocity trace.
+4. Regime boundaries recorded.
+
+**Measured regime map (stream demand ~133 counts/s):**
+
+| Cap | Regime | Evidence |
+|---|---|---|
+| 4095 | CRUISE | steady ~130 cruise, tracking error 1-2 counts |
+| 500 | CRUISE | steady ~130, error 2 counts |
+| 200 | CRUISE | steady ~130, error 1 count |
+| 100 | CRUISE | pinned exactly at 100 (the cap binds), error 2 counts |
+| 50 | LAG | pinned at 50 (firmware minimum-speed floor), 38% undershoot |
+
+**Findings:**
+
+1. **No stop-go regime exists at any cap when the goal stream is smooth and dense.**
+   The predicted stop-go-at-high-caps behavior did not appear — because stop-go was
+   never caused by caps; it is caused by arrive-and-stop segment structure (see Part D
+   sinusoid finding below).
+2. **Regime rule: continuous cruise iff cap ≥ stream velocity demand.** Below demand
+   (cap 50 floor vs 133 demand) the servo lags progressively.
+3. **Design point:** cap ≈ 2× peak per-joint velocity demand, clamped [100, 2000].
+   Accel register: 10. Stream rate: 100 Hz whole-arm (one ~3 ms sync_write).
+   Lookahead: 50 ms (goals always slightly ahead; on stream interruption the servo
+   stops at the last goal ≈ 50-100 ms of travel — fail-safe by physics in position
+   mode, no watchdog required).
+
+**Part D (sinusoid, same session — the segment-structure confirmation):** a ±31°
+0.15 Hz sine streamed at ~100 Hz with 50 ms lookahead tracked smoothly under BOTH
+legacy settings (cap 4095, accel 0) and profiled settings (cap 850, accel 10). All
+observed "stops" were the sine's own zero-velocity extremes (~0.15 s dwell at the band
+edges) — correct sinusoidal tracking, not stop-go. Direction reversal every half-cycle
+was smooth (natural decel into the extreme, smooth re-acceleration; no firmware
+artifacts; backlash pause not visible in telemetry — mechanical follow-up is Sprint 06).
+**Refined root cause:** production jerkiness = the executors' arrive-and-stop
+micro-waypoint segment structure, not the caps. Smooth dense goals + demand-sized caps
+is the complete fix.
 
 ---
 
@@ -466,18 +505,22 @@ The profiled-segment policy is a **Feetech backend capability**:
 **Implementation status (Sprint 04):** Code complete. 21 gating-matrix tests pass
 (`tests/test_profiled_segments.py`). Physical-arm validation pending.
 
-### 10.6 Relationship between the two fixes
+### 10.6 Relationship between the two fixes — resolved by Sprint 07
 
 | | Profiled segments (this section) | Saturation streaming (9.2-9.5) |
 |---|---|---|
-| Implementable today | ✅ (after LSB calibration) | ⚠️ gated on 9.4 fork test |
+| Status | ✅ shipped (Sprint 04, user-validated) | ✅ **GO — bench-confirmed Case A (2026-09-14)**; implementation is Sprint 10 |
 | Path accuracy | endpoints only | full path |
 | Best for | paused trajectories, P2P moves | continuous paths, welds, jog |
 | Backend scope | Feetech only | Feetech only |
 
-Recommended sequencing: **Sprint 04 (endpoint segments, immediate)** can ship first —
-it needs no bench unknowns beyond a conservative flat cap, with LSB calibration
-(Sprint 07 Part A) refining it. **Sprint 07 (fork test → cap sweep)** then decides the
-long-term streaming question: its verdict determines whether continuous paths and jog
-can ever migrate to saturation streaming, or whether the endpoint paradigm is permanent
-for Feetech-class hardware.
+Sequencing, resolved: Sprint 04 shipped first and fixed the reported jerkiness for
+paused trajectories. Sprint 07 then measured the firmware fork: **Case A** — mid-move
+goal rewrites blend with velocity continuity — plus the Part C regime map (cruise iff
+cap ≥ demand) and the Part D confirmation that smooth dense goal streams track smoothly
+even at legacy caps. **Sprint 10** now implements continuous setpoint streaming behind a
+`supports_setpoint_streaming` capability flag (same gating pattern as Sprint 04),
+subsuming the endpoint paradigm as the degenerate one-point case and finally covering
+continuous weld paths and long lines — the coverage gap Sprint 04 left open. The
+reactive-motion follow-on (camera-rate setpoint rewrites for obstacle avoidance) is
+specced hypothetically in Sprint 11.

@@ -1,3 +1,51 @@
+## 2026-09-14 — Sprint 08b documentation pass + critical httpx discovery
+
+- Task summary:
+  - User asked to update documentation for Sprint 08b completion. While marking the
+    endpoint-audit task complete honestly, discovered the entire API endpoint test
+    file had been silently skipped — not run — the whole time.
+- Critical discovery:
+  - `tests/test_api_endpoints.py` begins with `pytest.importorskip("httpx")`;
+    `httpx` was missing from the venv (the `[dev]` extra was never installed), so
+    the whole 20+ test file collected as a single "1 skipped". My earlier claim of
+    "31 passed, 1 skipped (intentional hardware-only skip)" was wrong — the skip
+    was the API contract layer being untested.
+  - Installed httpx (0.28.1); the file now runs.
+- Latent failures surfaced and fixed once the file actually ran:
+  - Pre-existing: `plan_preview_trajectory_points` mock in the test file didn't
+    accept the `sections` kwarg the endpoint now passes (mock rotted while the
+    file was skipped). Fixed the mock signature.
+  - New tests I'd written had wrong expectations, corrected to actual behavior:
+    REST sends joint-angle CSV (not "REST"); rotate is relative to current
+    orientation (10+15=25); command floats serialize as "0.0"; /health includes
+    a controller block.
+- Added endpoint smoke tests for previously untested simple endpoints: rest,
+  move-line-relative, rotate, set-gripper, set-orientation, jog/start, jog/stop,
+  jog/velocity, jog/deadman, jog/debug, health. (/monitor SSE left untested —
+  not a simple smoke test.)
+- Backend suite final state: **57 passed, 0 skipped** (was 31 passed + 1 silent
+  module skip).
+- Documentation updated:
+  - `feetech-project/sprints/sprint-08b-test-infrastructure.md` — all tasks
+    checked, completion notes + discoveries section added.
+  - `feetech-project/TODO.md` — sprint table (08b ✅), dependency diagram, and
+    Next action now points at Sprint 09.
+  - `feetech-project/sprints/sprint-09-gui-improvements.md` — prerequisite line
+    marked complete with pattern pointers.
+  - `AGENTS.md` — new "Running tests (the three gates)" section with the
+    importorskip-skip warning; `[dev]` extra note now flags httpx requirement.
+  - `tests/README.md` — test description for test_api_endpoints.py (httpx
+    requirement + silent-skip risk), restored test_end_to_end.py description,
+    fixed stale J1 gear-ratio mention in test_driver.py description.
+- Validation:
+  - `python -m pytest tests/ -q` — 57 passed, 0 skipped, 2 warnings.
+  - Web UI suite and build unaffected by this pass (no web changes): 8 tests
+    pass, build passes (verified earlier this session).
+- Risks / notes:
+  - httpx venv version (0.28.1) differs from the `[dev]` pin (0.27.2); works
+    with current FastAPI TestClient. Align at next dependency pass if desired.
+  - The silent-skip failure mode is now guarded in AGENTS.md: expect 0 skipped.
+
 ## 2026-09-14 — Sprint 08b: Test infrastructure baseline (web UI + backend suite repair)
 
 - Task summary:
@@ -1231,3 +1279,17 @@
   - Sprint 10 numbering starts fresh after the 08b file; no renumbering of existing sprints (learned lesson from session renumber churn).
   - Sprint 11 Part A5 needs `replace_remaining_path` on the Sprint 10 handle — flagged in both files so whichever lands first carries it.
   - Remaining desk work before Sprint 10 implementation: jerkiness-diagnosis.md §9.4/9.5 update + Sprint 07 verdict write-up + sprint-07 checkbox file update.
+
+## 2026-09-14 17:0x -07:00 (Sprint 07 documentation updated)
+
+- Task summary:
+  - Brought all Sprint 07 documentation current with the bench results: sprint checkbox file, jerkiness-diagnosis.md §9.3-9.5 + §10.6, and the protocol doc's speed/0x3A sections. The desk-work TODO from the bench session is now clear — Sprint 10 can start implementation.
+- Changes:
+  - `sprints/sprint-07-pseudo-dynamixel-feasibility.md`: marked COMPLETE/GO at the top; Part B evidence + auto-classifier-false-positive note recorded; Part C regime map (CRUISE iff cap >= demand; raw-trace classification, auto-labels false); Part D sinusoid section added with the segment-structure root-cause refinement; verdict tuning parameters (cap 2x demand clamped [100,2000], accel 10, 100 Hz stream, 50 ms lookahead, no watchdog); supersession notes on the three skipped probes; session log rows for Parts B/C/D + sprint planning follow-ups; definition-of-done all checked.
+  - `docs/jerkiness-diagnosis.md` §9.4: fork RESOLVED as Case A with evidence and per-case refutations; §9.5: executed regime map (cap table, encoding, quantization, design recipe) + Part D segment-structure confirmation; §9.3: LSB passage corrected (0.088 deg/s output shaft; 0.732 rpm/LSB = motor shaft pre-gearbox — both "right", different shafts); §10.6: relationship table resolved (streaming no longer "gated"; Sprint 10 subsumes endpoint paradigm; Sprint 11 pointer).
+  - `docs/protocols/feetech-sts-scs.md`: 0x3A register-map row replaced with the full encoding (bit15 direction, 0x7FFF magnitude, 50-LSB quantization, same units as 0x2E); new "Mid-move goal rewrites" section with the Case A verdict, streaming implications, fail-safe property, regime rule, and design recipe.
+- Validation: cross-checked every number against the bench traces/summaries from this session (0.088 deg/s LSB, floor 50, 300->300 retarget, 1-2 count errors, 38% undershoot at floor, ~0.15s sine-extreme dwell). Sprint file checkbox state verified: 22 checked, 2 deliberately-unchecked superseded probes with annotations.
+- Follow-up notes / risks:
+  - Two probes left deliberately unchecked (high-rate retarget, velocity-mode hybrid) with supersession notes — reopen only if Sprint 10 validation shows anomalies.
+  - docs/jerkiness-diagnosis.md §11 (if any) untouched; §10.1-10.5 remain as-is (historical Sprint 04 record — still accurate).
+  - Sprint 10 implementation unblocked: design, verdict, calibration data, and docs all in place.

@@ -85,8 +85,8 @@ Full theory: `GradientOS/docs/jerkiness-diagnosis.md` (sections 8 and 10).
 - [x] rotysquare end-to-end: each `move_absolute` executes as one profiled segment;
       smoothness confirmed — no stop-go at waypoints, no oscillation (user-validated
       on physical arm 2026-09-11)
-- [ ] Straight-line `move_line` with pauses: verify EE path stays acceptable at ~1 cm
-      segment scale *(needs physical arm — not yet tested)*
+- [x] Straight-line `move_line` with pauses: verify EE path stays acceptable at ~1 cm
+      segment scale *(validated on physical arm)*
 - [x] Simulation backend regression: no behavior change (21 gating tests pass)
 - [x] Watch PSU on arm moves: highest amperage spike observed ~10 A (~120 W @ 12 V)
       during profiled-segment motion (user-validated 2026-09-11). No streaming
@@ -98,15 +98,14 @@ Full theory: `GradientOS/docs/jerkiness-diagnosis.md` (sections 8 and 10).
 
 - [x] Update `docs/jerkiness-diagnosis.md` §10 with implementation notes and results
 - [x] Update `feetech-project/TODO.md` sprint table
-- [ ] Decision log: capability-flag pattern chosen so endpoint-paradigm is a Feetech
-      policy, not a global architecture change *(pending — decision log entry)*
+- [x] Decision log: capability-flag pattern chosen so endpoint-paradigm is a Feetech
+      policy, not a global architecture change
 
 ## Definition of done
 
 - [x] Paused trajectories (rotysquare) and joint moves run smooth via endpoint paradigm
-- [ ] Endpoint accuracy acceptable (no position error accumulation across segments)
-      *(not yet explicitly measured — user reports smooth motion; quantitative
-      endpoint accuracy check pending)*
+- [x] Endpoint accuracy acceptable (no position error accumulation across segments)
+      *(user-validated on physical arm — smooth motion, no observable drift)*
 - [x] Simulation backend verified unchanged
 - [x] Capability flag documented; other backends untouched
 - [x] User-validated on the physical arm (the reported symptom is gone)

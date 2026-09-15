@@ -5,6 +5,9 @@
 > exist (UDP: `CALIBRATE`, `SET_ZERO`, `FACTORY_RESET` in `run_controller.py`) but are
 > not exposed through the FastAPI API or the web UI. Part of this sprint is bridging
 > that gap.
+> Sprint 08b (test infrastructure) is complete — build every new screen and endpoint
+> with tests from the start, following the patterns in `web-ui/src/test/` (vitest +
+> `installFetchMock`) and `tests/test_api_endpoints.py` (`patch_send`).
 
 ## Goal
 
@@ -15,8 +18,10 @@ adds RC-controller / gamepad input as an alternative jog method.
 
 ## Prerequisites
 
-- Sprint 08b (Test Infrastructure Baseline) complete — new UI screens get tests
-  written alongside them using the vitest + API-mock patterns established there
+- Sprint 08b (Test Infrastructure Baseline) ✅ complete 2026-09-14 — new UI screens get
+  tests written alongside them using the vitest + API-mock patterns established there
+  (`web-ui/src/test/apiMock.ts`, `installFetchMock`; backend: `tests/conftest.py` +
+  `patch_send` pattern)
 - Web UI running (`./run-web.sh`) with API + controller online ✅ (existing)
 - Sprint 04b (endpoint-paradigm quick fix) complete ✅ — jog velocity path works
 - Sprint 08 (full-arm hardening) recommended first or consciously deferred —

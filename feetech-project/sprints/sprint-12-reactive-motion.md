@@ -1,4 +1,4 @@
-# Sprint 11 — Reactive Motion: Camera-Rate Obstacle Avoidance (HYPOTHETICAL)
+# Sprint 12 — Reactive Motion: Camera-Rate Obstacle Avoidance (HYPOTHETICAL)
 
 > **Status: hypothetical / not scheduled.** This sprint depends on (a) Sprint 10
 > landing (setpoint streaming executor), and (b) the camera/vision stack
