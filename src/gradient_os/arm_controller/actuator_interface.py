@@ -64,6 +64,60 @@ class ActuatorBackend(ABC):
         """
         return False
 
+    @property
+    def supports_setpoint_streaming(self) -> bool:
+        """
+        Whether this backend supports continuous setpoint streaming with
+        lookahead (Sprint 10).
+
+        When True, the trajectory executor hands timed ``(t, q)`` paths to
+        ``execute_timed_path()`` instead of pacing goal writes itself.  The
+        backend owns a pacing thread that writes lookahead position goals at
+        ~100 Hz so the servo firmware blends them into a continuous motion
+        (Case A behavior, Sprint 07 Part B).
+
+        Backends without streaming keep their existing behavior (dense
+        waypoint streaming from the executor, or profiled segments).
+
+        Returns:
+            bool: True if setpoint streaming is supported and desired.
+        """
+        return False
+
+    def execute_timed_path(
+        self,
+        path: list[tuple[float, list[float]]],
+        options: Optional[dict] = None,
+    ):
+        """
+        Execute a timed path as a continuous setpoint stream.
+
+        The pacing thread converts the timed path into a dense setpoint
+        stream at ~100 Hz with 50 ms lookahead.  Each cycle writes
+        ``position(t_now + lookahead)`` via ``sync_write`` for all servos.
+        The servo firmware blends mid-cruise goal rewrites with velocity
+        continuity (Case A, Sprint 07 Part B).
+
+        Args:
+            path: List of ``(t_seconds, joint_positions)`` tuples covering
+                  the move.  ``joint_positions`` is a list of floats in
+                  radians, one per logical joint.
+            options: Optional dict with keys:
+                - ``velocity_caps``: per-joint speed register values
+                - ``accel_override``: accel register value (default 10)
+                - ``sim_fast_forward``: skip sleeps in simulation (bool)
+
+        Returns:
+            MotionHandle: handle supporting ``cancel()``, ``pause()``,
+            ``resume()``, ``is_done()``, ``wait()``.
+
+        Raises:
+            NotImplementedError: if the backend does not support streaming.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support setpoint streaming"
+        )
+
     # =========================================================================
     # Initialization & Configuration
     # =========================================================================
@@ -471,6 +525,7 @@ class ActuatorBackend(ABC):
 #   from gradient_os.arm_controller.backends.simulation import SimulationBackend
 
 from .backends.simulation import SimulationBackend
+from .motion_handle import MotionHandle, MotionState
 
-__all__ = ['ActuatorBackend', 'SimulationBackend']
+__all__ = ['ActuatorBackend', 'SimulationBackend', 'MotionHandle', 'MotionState']
 

@@ -819,8 +819,17 @@ def handle_stop_command():
     """
     Stops any currently running motion by setting a global flag and sending
     an immediate brake command to the servos.
+
+    Sprint 10: if a streaming motion handle is active, cancel it first —
+    this writes current-position-as-goal so the servo decelerates smoothly
+    over the ~50 ms lookahead horizon (better than a hard brake command).
     """
     print("[Controller] Received STOP command. Halting all motion.")
+    # Cancel streaming handle if active (Sprint 10)
+    streaming_handle = utils.trajectory_state.pop("streaming_handle", None)
+    if streaming_handle is not None:
+        print("[Controller] Cancelling streaming motion handle.")
+        streaming_handle.cancel()
     # Set the flag to stop any high-level trajectory loops
     utils.trajectory_state["should_stop"] = True
     utils.trajectory_state["weld_active"] = False

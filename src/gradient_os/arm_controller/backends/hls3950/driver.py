@@ -20,11 +20,12 @@ import serial
 import numpy as np
 
 from ...actuator_interface import ActuatorBackend
+from .._streaming_mixin import StreamingMixin
 from . import config
 from . import protocol
 
 
-class HLS3950Backend(ActuatorBackend):
+class HLS3950Backend(StreamingMixin, ActuatorBackend):
     """
     Feetech HLS3950 servo backend for GradientOS.
     
@@ -117,6 +118,9 @@ class HLS3950Backend(ActuatorBackend):
         
         # Alert callback (can be set by user for error reporting)
         self._alert_callback: Optional[Callable] = None
+        
+        # Streaming config (Sprint 10)
+        self._set_streaming_config(robot_config)
     
     # =========================================================================
     # Properties

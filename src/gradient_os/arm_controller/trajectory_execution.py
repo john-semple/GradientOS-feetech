@@ -76,6 +76,43 @@ def _backend_supports_profiled_segments() -> bool:
     )
 
 
+def _backend_supports_setpoint_streaming() -> bool:
+    """
+    Check if the active backend supports continuous setpoint streaming
+    (Sprint 10).
+
+    When True, the executor hands timed (t, q) paths to
+    ``backend.execute_timed_path()`` instead of pacing goal writes itself.
+    The backend owns the pacing thread with 100 Hz writes and 50 ms lookahead.
+
+    Returns:
+        bool: True if the active backend supports setpoint streaming;
+              False otherwise (including no backend active).
+    """
+    if not _use_backend():
+        return False
+    backend = _get_backend()
+    return (
+        backend is not None
+        and backend.is_initialized
+        and getattr(backend, 'supports_setpoint_streaming', False)
+    )
+
+
+def _joint_path_to_timed(
+    joint_path: list[list[float]],
+    frequency: int,
+) -> list[tuple[float, list[float]]]:
+    """Convert a dense joint path (implicitly timed by frequency) into
+    explicit ``(t_seconds, joint_positions)`` tuples for ``execute_timed_path``.
+    """
+    time_step = 1.0 / frequency
+    return [
+        (i * time_step, list(q))
+        for i, q in enumerate(joint_path)
+    ]
+
+
 def _build_primary_feedback_ids() -> list[int]:
     """
     Build a list of primary servo IDs for feedback (one per logical joint).
@@ -682,6 +719,47 @@ def _plan_high_fidelity_trajectory(cartesian_points: list,
     return final_joint_trajectory
 
 
+def _execute_streaming_step(step: dict) -> None:
+    """
+    Sprint 10 — execute a 'move' step as a continuous setpoint stream.
+
+    Hands the dense waypoint path (implicitly timed by step['freq']) to the
+    backend's ``execute_timed_path()`` which owns the pacing thread with
+    100 Hz writes and 50 ms lookahead.  Covers both weld and non-weld moves
+    (the Sprint 04b gap for continuous weld paths is now closed).
+
+    The handle is registered in ``trajectory_state["streaming_handle"]`` so
+    that the global ``should_stop`` flag can cancel it.
+    """
+    backend = _get_backend()
+    if backend is None:
+        return
+
+    joint_path = step['path']
+    if not joint_path:
+        return
+
+    freq = step.get('freq', 100)
+    timed_path = _joint_path_to_timed(joint_path, freq)
+
+    print(f"[Pi Execute] Streaming {len(joint_path)} waypoints at {freq} Hz → backend pacing thread.")
+
+    handle = backend.execute_timed_path(timed_path)
+    utils.trajectory_state["streaming_handle"] = handle
+
+    try:
+        while not handle.is_done() and not handle.is_cancelled():
+            if utils.trajectory_state["should_stop"]:
+                handle.cancel()
+                break
+            handle._wait_for_resume(0.01)
+    finally:
+        utils.trajectory_state.pop("streaming_handle", None)
+
+    # Update global state to final position
+    utils.current_logical_joint_angles_rad = list(joint_path[-1])
+
+
 def _execute_profiled_segment_step(step: dict) -> None:
     """
     Sprint 04 — execute a 'move' step as a single profiled segment.
@@ -793,16 +871,14 @@ def _trajectory_executor_thread(planned_steps: list[dict], should_loop: bool):
                 print(f"[Pi Execute] Executing Step {i+1}/{len(planned_steps)} ({step['type']})...")
                 utils.trajectory_state["weld_active"] = bool(step.get("weld_active", False))
                 if step['type'] == 'move':
-                    if _backend_supports_profiled_segments() and not step.get("weld_active", False):
-                        # Sprint 04: collapse dense path to ONE endpoint command
-                        # for non-weld moves on backends with an internal
-                        # trapezoidal profiler (Feetech).  Weld paths keep dense
-                        # streaming until Sprint 07 verdict.
+                    if _backend_supports_setpoint_streaming():
+                        _execute_streaming_step(step)
+                    elif _backend_supports_profiled_segments() and not step.get("weld_active", False):
                         _execute_profiled_segment_step(step)
                     else:
                         _execute_joint_path(step['path'], step['freq'])
                 elif step['type'] == 'joint_move':
-                    if _backend_supports_profiled_segments():
+                    if _backend_supports_profiled_segments() and not _backend_supports_setpoint_streaming():
                         # Sprint 04: joint_move is inherently a single endpoint;
                         # use the profiled-segment path for consistent cap
                         # sizing on Feetech.
@@ -863,6 +939,36 @@ def _open_loop_executor_thread(
         frequency = 400
 
     n_steps = len(joint_path)
+
+    # Sprint 10: streaming handoff — when the active backend supports
+    # setpoint streaming, hand the timed path to the backend instead of
+    # pacing writes in this thread.  The backend owns the pacing thread.
+    if _backend_supports_setpoint_streaming():
+        backend = _get_backend()
+        print(f"[Pi OL] Streaming {n_steps} steps to backend ({frequency} Hz → timed path).")
+        timed_path = _joint_path_to_timed(joint_path, frequency)
+        handle = backend.execute_timed_path(timed_path)
+
+        utils.trajectory_state["streaming_handle"] = handle
+
+        while not handle.is_done() and not handle.is_cancelled():
+            if utils.trajectory_state["should_stop"]:
+                handle.cancel()
+                break
+            handle._wait_for_resume(0.01)
+
+        final_q = joint_path[-1] if joint_path else utils.current_logical_joint_angles_rad
+        utils.current_logical_joint_angles_rad = list(final_q)
+
+        utils.trajectory_state.pop("streaming_handle", None)
+
+        if owns_trajectory_state and utils.trajectory_state.get("thread") is threading.current_thread():
+            utils.trajectory_state.update({"is_running": False, "should_stop": False, "thread": None})
+            utils.trajectory_state.pop('diagnostics_session_id', None)
+            utils.trajectory_state.pop('diagnostics_folder_type', None)
+        print("[Pi OL] Streaming executor finished.")
+        return
+
     print(f"[Pi OL] Starting Open-Loop Executor at {frequency} Hz ({n_steps} steps).")
 
     # ----------------------------------------------

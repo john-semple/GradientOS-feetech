@@ -28,8 +28,37 @@ Use this file as persistent, repo-local execution memory.
 - [user] Prefer implementation over discussion; "do it, do not only explain."
 - [user] UI preferences are specific and iterative; keep changes minimal and visual hierarchy clean.
 - [tool] Build and lint checks (`npm run build`, `ReadLints`) catch regressions quickly in the web-ui workflow.
+- [self] When creating a mixin for near-identical classes (STS3215/HLS3950), verify the MRO doesn't shadow backend-specific properties. StreamingMixin goes first in the MRO: `class STS3215Backend(StreamingMixin, ActuatorBackend)`.
+- [self] SimulationBackend's `prepare_sync_write_commands` returns float angles, not raw ints — use `set_joint_positions()` for sim streaming writes, not `sync_write()`.
+- [self] In fast-forward sim mode, use a virtual clock (`cycle * period`) instead of `time.monotonic()` — wall clock barely advances when sleeps are skipped, so `t_now > path_end` never triggers and the loop hangs.
+- [self] When unpacking path tuples `(t, q)`, remember `t` is a float, not a tuple — `t1[0]` is a TypeError, use `t1` directly.
+- [self] `handle_stop_command()` must check for and cancel the active streaming handle (`trajectory_state["streaming_handle"]`) before falling back to the legacy brake command.
+- [self] **Per-joint speed caps are critical for streaming.** Using `max(caps)` (the fastest joint's cap) for ALL servos causes backlash hunt oscillation on J1/J2 — the low-velocity joints aggressively chase each micro-goal across the backlash gap at 100 Hz. Must use per-joint caps via a custom `_prepare_streaming_commands()` that builds per-servo speed register values. The `prepare_sync_write_commands()` method only accepts a single flat speed — don't use it for streaming.
+- [self] `_backend_supports_setpoint_streaming()` must check `_use_backend()` first, not just `backend.is_initialized`. The end-to-end test patches `_use_backend` to return False (forcing legacy servo_protocol path); without that check, streaming activates even when the test expects legacy behavior.
+- [self] **Count the dots in relative imports.** `from ... import utils` (3 dots) from `backends/_streaming_mixin.py` resolves to `gradient_os.utils` (doesn't exist). `from .. import utils` (2 dots) resolves to `gradient_os.arm_controller.utils` (correct). A bare `except ImportError: pass` silently swallows the error — the GUI never updated during moves and it took a full debugging cycle to find a one-dot bug.
+- [self] **Bus contention on single-wire protocols is the silent killer.** Two threads independently reading/writing the CH340 half-duplex bus causes unpredictable collisions that manifest as motion jerk, not errors. One thread must own the bus during motion; all reads happen inside the write loop on a controlled schedule.
+- [self] **Cap multiplier should be close to 1×, not high.** 3× gives racing room that causes overshoot-stall vibration on slow moves. 1.2× is enough to track the stream. The bogging-down was bus contention, not insufficient cap — so lowering after fixing contention was safe.
+- [self] **Don't make design decisions without user approval.** Implemented variable pacing + interleaved reads without presenting options first. User called this out. Present options, explain trade-offs, implement what they choose.
+- [self] **Don't edit motion code while the controller is running.** It picks up new code on the next motion command and moves the arm unexpectedly. Always ask user to stop controller first.
+- [self] **Test on hardware early and often.** All 93 sim tests passed but multiple issues only appeared on real hardware (bus contention, backlash oscillation, cap sizing). Sim verifies logic; only hardware validates dynamics.
+- [self] **Read logs carefully.** `[STS3215 SyncRead] WARNING: No response from IDs` messages were the key diagnostic for bus contention. They appeared before motion problems were reported but weren't recognized until the user reported jerkiness.
 
 ## Session Entries
+
+### 2026-09-15 — Sprint 10: Smooth Streaming Executor implementation
+
+- Implemented Sprint 10 setpoint streaming in one session.
+- User approved design changes to sprint doc first (HLS shared impl + config
+  override, robust sim with fast_forward, MotionHandle with pause/resume),
+  then said "go".
+- Created MotionHandle, StreamingMixin, sim streaming, executor migration,
+  36 new tests. All 93 backend tests pass, web UI tests + build pass.
+- Bench validation (physical arm) left flagged as needs-hardware per user's
+  request — they don't have a servo set up yet but will validate later.
+- Key gotcha: sim pacing loop with fast_forward needs a virtual clock, not
+  wall-clock time. Caught by test_fast_forward_completes_quickly timeout.
+- Key gotcha: sim `prepare_sync_write_commands` returns float angles, not
+  raw encoder values. Use `set_joint_positions()` for sim streaming.
 
 ### 2026-09-14 (session 2) - Sprint 08b doc pass: httpx silent-skip discovery
 

@@ -1,3 +1,90 @@
+## 2026-09-15 — Sprint 10: tuning iterations on real hardware
+
+- Six iterations of tuning on real hardware after initial implementation.
+- Full writeup: `feetech-project/sprints/sprint-10-implementation-and-lessons.md`
+- Key fixes in order:
+  1. Per-joint speed caps (was using max(caps) for all servos → backlash hunt)
+  2. Telemetry bus contention suppression (telemetry reads starving write stream)
+  3. Cap multiplier lowered 3× → 1.2×, floor 300 → 150 (overshoot-stall vibration)
+  4. Variable pacing 100/33 Hz + lookahead 50 → 100 ms (micro-vibration on slow moves)
+  5. Slow-move threshold raised 10 → 50 deg/s (most rotysquare moves are below 50)
+  6. Fixed wrong relative import (`from ...` → `from ..`) causing GUI to never update
+- Remaining issues: trapezoidal profile acceleration discontinuities (needs S-curve
+  planner), ~0.5s GUI lag (needs higher read rate or direct UDP push from pacing thread)
+- All 93 backend tests pass throughout. End-to-end test is flaky (pre-existing timing).
+
+## 2026-09-15 — Sprint 10: Smooth Streaming Executor (Case A Setpoint Streaming)
+
+- Task: implement Sprint 10 — migrate motion executors from arrive-and-stop
+  waypoint streaming to continuous setpoint streaming with 50 ms lookahead,
+  wrapped entirely inside the backend. Planner, command API, web UI, and
+  weld planner require zero changes.
+- Design decisions (agreed with user before implementation):
+  - HLS3950 shares the same streaming implementation as STS3215 (both are
+    near-identical driver copies). Config-level override `streaming_enabled:
+    False` disables it with no code change if bench testing reveals HLS
+    firmware doesn't blend smoothly (Case A unverified on HLS).
+  - Simulation backend gets a robust pacing implementation (100 Hz, 50 ms
+    lookahead) — not a trivial instant-replay. `sim_fast_forward` option
+    (or `SIM_FAST_FORWARD=1` env var) skips sleeps for automated tests
+    using a virtual clock.
+  - MotionHandle has `cancel()`, `pause()`, `resume()`, `is_done()`,
+    `wait()`. `cancel()` writes current-position-as-goal (servo decelerates
+    over ~50 ms horizon — smoother than a hard brake). `pause()`/`resume()`
+    enables manual-tool-change / human-checkpoint workflows. `resume()`
+    re-derives nearest path timestamp from sync_read; large drift triggers
+    a short profiled reconnect segment.
+  - `handle_stop_command()` in command_api.py now cancels the active
+    streaming handle before falling back to the legacy brake command.
+- Files created:
+  - `src/gradient_os/arm_controller/motion_handle.py` — MotionHandle class
+    with MotionState enum (RUNNING/PAUSED/CANCELLED/DONE), thread-safe
+    state transitions, cancel callback, resume event, done event.
+  - `src/gradient_os/arm_controller/backends/_streaming_mixin.py` — shared
+    StreamingMixin for Feetech-class backends: pacing loop (100 Hz, 50 ms
+    lookahead), per-move velocity cap sizing (max|Δq/Δt|×2 clamped
+    [100,2000]), stream guard (clamp goals to path min/max), horizon rule,
+    cancel (write current-pos-as-goal), pause/resume (sync_read nearest t,
+    profiled reconnect for large drift).
+  - `tests/test_setpoint_streaming.py` — 36 gating-matrix tests.
+- Files modified:
+  - `actuator_interface.py` — added `supports_setpoint_streaming` property
+    (default False) and `execute_timed_path()` method (default
+    NotImplementedError) to ActuatorBackend ABC. Re-exports MotionHandle.
+  - `backends/sts3215/driver.py` — STS3215Backend now inherits
+    StreamingMixin; `_set_streaming_config()` called in __init__.
+  - `backends/hls3950/driver.py` — HLS3950Backend now inherits
+    StreamingMixin; `_set_streaming_config()` called in __init__.
+  - `backends/simulation/backend.py` — SimulationBackend overrides
+    `supports_setpoint_streaming = True` and implements
+    `execute_timed_path()` with robust pacing (100 Hz, 50 ms lookahead,
+    virtual clock for fast_forward, set_joint_positions for sim writes).
+  - `trajectory_execution.py` — added
+    `_backend_supports_setpoint_streaming()` helper,
+    `_joint_path_to_timed()` converter, `_execute_streaming_step()`
+    function. `_open_loop_executor_thread` hands off to
+    `execute_timed_path` when streaming is available.
+    `_trajectory_executor_thread` routes move steps to streaming when
+    available (takes precedence over profiled segments; covers both weld
+    and non-weld moves).
+  - `command_api.py` — `handle_stop_command()` cancels active streaming
+    handle before legacy brake.
+  - `feetech-project/sprints/sprint-10-smooth-streaming-executor.md` —
+    updated with design decisions, HLS config override, robust sim,
+    MotionHandle shape, pause/resume, bench validation flagged as
+    needs-hardware.
+- Validation:
+  - pytest: **93 passed, 0 skipped, 0 failed** (57 existing + 36 new)
+  - npm test: 8 passed
+  - npm build: success
+  - All bench validation items flagged as requiring physical hardware.
+- Risks:
+  - HLS3950 firmware Case A blending unverified — config override ready.
+  - GIL contention with IK/vision threads — pacing loop body is tiny
+    (interpolate + one sync_write); Sprint 07 measured ~160 Hz sustainable.
+  - `resume()` drift heuristic (> 0.1 rad → profiled reconnect) is a
+    placeholder; needs bench calibration on real hardware.
+
 ## 2026-09-14 — Sprint 08b documentation pass + critical httpx discovery
 
 - Task summary:

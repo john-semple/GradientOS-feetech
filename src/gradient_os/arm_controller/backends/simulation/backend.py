@@ -5,10 +5,14 @@
 
 from typing import Optional, TYPE_CHECKING
 import math
+import os
+import threading
+import time
 import numpy as np
 
 from ..registry import get_encoder_resolution
 from ...actuator_interface import ActuatorBackend
+from ...motion_handle import MotionHandle
 
 if TYPE_CHECKING:
     from ...robots.base import RobotConfig
@@ -130,6 +134,198 @@ class SimulationBackend(ActuatorBackend):
     def encoder_resolution(self) -> int:
         """Returns the configured encoder resolution."""
         return self._encoder_resolution
+
+    # =========================================================================
+    # Setpoint Streaming (Sprint 10)
+    # =========================================================================
+
+    @property
+    def supports_setpoint_streaming(self) -> bool:
+        """True — simulation supports setpoint streaming with robust pacing."""
+        return True
+
+    def execute_timed_path(
+        self,
+        path: list[tuple[float, list[float]]],
+        options: Optional[dict] = None,
+    ) -> MotionHandle:
+        """Execute a timed path as a continuous setpoint stream in simulation.
+
+        Mirrors real-hardware behavior: paces at 100 Hz with 50 ms lookahead
+        so write frequency, lookahead correctness, cancel timing, pause/resume,
+        and horizon expiry are all exercised.
+
+        The ``sim_fast_forward`` option (options dict or SIM_FAST_FORWARD env
+        var) skips time.sleep calls for automated tests — positions replay
+        instantly but pacing logic still runs.
+        """
+        if not path:
+            raise ValueError("execute_timed_path: empty path")
+
+        options = options or {}
+        num_joints = self._num_joints
+
+        # Validate path
+        for i, (t, q) in enumerate(path):
+            if len(q) != num_joints:
+                raise ValueError(
+                    f"execute_timed_path: sample {i} has {len(q)} joints, "
+                    f"expected {num_joints}"
+                )
+
+        # Fast-forward mode
+        fast_forward = options.get('sim_fast_forward', False)
+        if not fast_forward:
+            fast_forward = os.environ.get('SIM_FAST_FORWARD', '0') == '1'
+
+        # Compute path bounds (stream guard)
+        path_min = [float('inf')] * num_joints
+        path_max = [float('-inf')] * num_joints
+        for _, q in path:
+            for j in range(num_joints):
+                if q[j] < path_min[j]:
+                    path_min[j] = q[j]
+                if q[j] > path_max[j]:
+                    path_max[j] = q[j]
+
+        handle = MotionHandle()
+
+        def _sim_cancel():
+            current = list(self._positions[:num_joints])
+            clamped = [
+                max(path_min[j], min(path_max[j], current[j]))
+                for j in range(num_joints)
+            ]
+            self.set_joint_positions(clamped, speed=4095, acceleration=10)
+
+        handle._set_cancel_callback(_sim_cancel)
+
+        thread = threading.Thread(
+            target=self._sim_pacing_loop,
+            args=(handle, path, path_min, path_max, fast_forward),
+            daemon=True,
+        )
+        handle._set_thread(thread)
+        thread.start()
+
+        return handle
+
+    def _sim_pacing_loop(
+        self,
+        handle: MotionHandle,
+        path: list[tuple[float, list[float]]],
+        path_min: list[float],
+        path_max: list[float],
+        fast_forward: bool,
+    ) -> None:
+        """Simulation pacing loop — mirrors real hardware at 100 Hz.
+
+        In fast-forward mode, a virtual clock advances by ``period`` each
+        cycle instead of using wall-clock time, so a 5-second path completes
+        in milliseconds.
+        """
+        period = 1.0 / 100  # 100 Hz
+        lookahead = 0.050  # 50 ms
+        path_end = path[-1][0]
+        start_time = time.monotonic()
+        num_joints = self._num_joints
+
+        # Initial write
+        first_q = self._sim_interp(path, path[0][0])
+        first_q = self._sim_clamp(first_q, path_min, path_max)
+        self.set_joint_positions(first_q, speed=4095, acceleration=10)
+
+        cycle = 0
+        try:
+            while not handle._should_stop():
+                if handle.is_paused():
+                    handle._wait_for_resume()
+                    if handle._should_stop():
+                        break
+                    current = list(self._positions[:num_joints])
+                    best_t = self._sim_nearest_path_t(path, current)
+                    start_time = time.monotonic() - best_t
+                    cycle = 0
+
+                if fast_forward:
+                    t_now = cycle * period
+                else:
+                    t_now = time.monotonic() - start_time
+                t_lookahead = t_now + lookahead
+
+                if t_now > path_end:
+                    final_q = self._sim_clamp(list(path[-1][1]), path_min, path_max)
+                    self.set_joint_positions(final_q, speed=4095, acceleration=10)
+                    break
+
+                goal_q = self._sim_interp(path, t_lookahead)
+                goal_q = self._sim_clamp(goal_q, path_min, path_max)
+                self.set_joint_positions(goal_q, speed=4095, acceleration=10)
+
+                cycle += 1
+                if not fast_forward:
+                    sleep_until = start_time + cycle * period
+                    sleep_t = sleep_until - time.monotonic()
+                    if sleep_t > 0:
+                        time.sleep(sleep_t)
+
+        except Exception as e:
+            print(f"[Sim Streaming] Pacing loop error: {e}")
+        finally:
+            handle._mark_done()
+
+    def _sim_interp(
+        self,
+        path: list[tuple[float, list[float]]],
+        t_target: float,
+    ) -> list[float]:
+        """Linear interpolation between path samples at time t_target."""
+        if t_target <= path[0][0]:
+            return list(path[0][1])
+        if t_target >= path[-1][0]:
+            return list(path[-1][1])
+
+        lo, hi = 0, len(path) - 1
+        while lo < hi - 1:
+            mid = (lo + hi) // 2
+            if path[mid][0] <= t_target:
+                lo = mid
+            else:
+                hi = mid
+
+        t0, q0 = path[lo]
+        t1, q1 = path[hi]
+        dt = t1 - t0
+        if dt <= 0:
+            return list(q1)
+        alpha = (t_target - t0) / dt
+        return [q0[j] + alpha * (q1[j] - q0[j]) for j in range(len(q0))]
+
+    def _sim_clamp(
+        self,
+        q: list[float],
+        path_min: list[float],
+        path_max: list[float],
+    ) -> list[float]:
+        return [max(path_min[j], min(path_max[j], q[j])) for j in range(len(q))]
+
+    def _sim_nearest_path_t(
+        self,
+        path: list[tuple[float, list[float]]],
+        current_q: list[float],
+    ) -> float:
+        """Find the path timestamp nearest to current_q in joint space."""
+        best_t = path[0][0]
+        best_dist = float('inf')
+        for t, q in path:
+            dist = sum(
+                (current_q[j] - q[j]) ** 2
+                for j in range(min(len(current_q), len(q)))
+            )
+            if dist < best_dist:
+                best_dist = dist
+                best_t = t
+        return best_t
     
     def set_joint_positions(
         self,

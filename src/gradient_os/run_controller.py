@@ -293,7 +293,21 @@ Examples:
             
             while not telemetry_stop_event.is_set():
                 try:
-                    q = servo_driver.get_current_arm_state_rad(verbose=False)
+                    # Skip servo reads while a streaming move is active —
+                    # the pacing thread needs exclusive access to the single-
+                    # wire bus.  Contention causes dropped reads (the
+                    # SyncRead warnings in the log) and starves the write
+                    # stream, causing jerky motion.
+                    streaming_active = (
+                        utils.trajectory_state.get("streaming_handle") is not None
+                        and not utils.trajectory_state.get("should_stop", False)
+                    )
+
+                    if streaming_active:
+                        # Use last known positions — don't touch the bus
+                        q = list(utils.current_logical_joint_angles_rad)
+                    else:
+                        q = servo_driver.get_current_arm_state_rad(verbose=False)
                     g = utils.current_gripper_angle_rad if utils.gripper_present else None
                     msg: dict[str, object] = {"t": time.time(), "joints": [float(x) for x in q]}
                     if g is not None:
@@ -304,8 +318,10 @@ Examples:
                         msg["weld_type"] = weld_type
                     
                     # --- Servo telemetry (voltage/temp/current/torque + alarms) ---
+                    # Skip extended telemetry reads while streaming — they
+                    # each take ~10-20ms on the bus and contend with writes.
                     now = time.time()
-                    if now - last_extra_ts >= 0.5:
+                    if now - last_extra_ts >= 0.5 and not streaming_active:
                         last_extra_ts = now
                         try:
                             # Get present servo IDs from backend or use configured IDs
