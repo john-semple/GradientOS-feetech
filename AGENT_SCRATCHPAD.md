@@ -45,6 +45,60 @@ Use this file as persistent, repo-local execution memory.
 
 ## Session Entries
 
+### 2026-09-15 — Sprint 10 tuning: negative results are results (cap + read ruled out)
+
+- [user] Ran two hardware A/B tests for me: CAP_FLOOR 150→60 = no difference;
+  interleaved read fully disabled = no difference. Slow-move jitter persists.
+- [lesson] When a parameter change produces ZERO observable difference, stop
+  tuning that parameter family — the binding constraint is elsewhere. Two
+  negative results in a row = the streaming cap/read space is exhausted.
+- [self] The ONLY code difference between smooth fast moves and jittery slow
+  moves is pacing frequency (100 vs 33 Hz). User's observation that PID hunting
+  would show at all speeds ruled out PID — the frequency is the suspect.
+- [hypothesis] 33 Hz re-plan sawtooth: firmware Case A re-plans a trapezoid on
+  every goal write; at 33 Hz the servo executes ~30ms of each plan (decel-toward-
+  arrival sag) before the next rewrite boosts velocity → felt as jitter. At
+  100 Hz plans are replaced every 10ms before decel shaping develops → smooth.
+  This also rereads Sprint 10 iteration 4-5 history: they traded 100Hz
+  quantization buzz for 33Hz re-plan sawtooth and reported "still slightly
+  jerky on slow parts" — the sawtooth was there all along.
+- [guardrail] Don't change motion code while the controller is running (Sprint 10
+  lesson 14). Next experiment (force 100Hz slow moves) needs user to restart.
+- [self] If 100Hz reintroduces micro-buzz on slow moves, the landing zone is
+  Sprint 04 endpoint paradigm for slow non-weld moves — the code already exists,
+  user-validated, and the fallback path in the executor is one gate-check away.
+
+### 2026-09-15 — Sprint 09 scope expansion: per-servo data view + RC wiggle wizard
+
+- [user] Asked to add two features to "the GUI sprint": expandable per-servo
+  temp/torque/velocity view, and RC/gamepad jog with an axis auto-assignment
+  wiggle wizard (X then Y then Z).
+- [self] Confirmed the GUI sprint is **Sprint 09** (`sprint-09-gui-improvements.md`),
+  NOT 11 (automated tool change) or 12 (reactive motion, hypothetical).
+  Verifying sprint topics before editing is worth the 2 tool calls.
+- [self] Telemetry stream already carries `temp_c`, `spd`, `drive_duty`,
+  `voltage_v` per servo (`servo_telemetry_stream.py` block1 decode). Torque/load
+  is NOT yet in the bulk read — Workstream E flags this as the only backend
+  change needed, and it's additive.
+- [self] Workstream D (RC input) already existed in Sprint 09 but had no
+  auto-assignment wizard — added the wiggle wizard as a task within D rather
+  than a new workstream, since it's intrinsic to the RC mapping UI.
+- [self] No code changed — sprint planning doc only. Updated DEVLOG +
+  scratchpad per workflow rule.
+
+### 2026-09-15 — Sprint 10 tuning: CAP_FLOOR lowered 150 → 60
+
+- User reported twitch on slow moves (J1/J2 backlash) + ~0.5s GUI lag.
+- Deep analysis of full streaming pipeline: identified 4 twitch causes
+  (CAP_FLOOR too high, trapezoidal accel discontinuity, static lead time
+  startup jump, interleaved read jitter) and 3 GUI lag causes (two independent
+  10Hz loops phase misaligned, silent read failures, 20ms read timeout).
+- User chose to do CAP_FLOOR first (visual inspect), then hill-climb the rest.
+- CAP_MIN and CAP_FLOOR both lowered 150 → 60. Tests pass. Pending hardware.
+- Planning sim-based hill-climb with backlash dynamics model for remaining
+  Option A params. Single no-load servo can tune mechanics but NOT backlash
+  (no load = no dead zone to cross).
+
 ### 2026-09-15 — Sprint 10: Smooth Streaming Executor implementation
 
 - Implemented Sprint 10 setpoint streaming in one session.

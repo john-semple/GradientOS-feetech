@@ -19,9 +19,9 @@ PACING_FREQUENCY_HZ = 100  # fast moves
 SLOW_PACING_FREQUENCY_HZ = 33  # slow moves — larger goal steps, no micro-vibration
 LOOKAHEAD_S = 0.100  # 100 ms — more profile distance for the firmware to smooth over velocity discontinuities
 STREAMING_ACCEL = 10  # bench-safe recipe (Sprint 01)
-CAP_MIN = 150
+CAP_MIN = 60  # minimum speed register value; lowered from 150 to reduce overshoot-stall on slow moves
 CAP_MAX = 2000
-CAP_FLOOR = 150  # enough authority to push through backlash without overshoot-stall on slow moves
+CAP_FLOOR = 60  # firmware hard floor is 50 LSB (4.4 deg/s); 60 gives slight torque authority through backlash
 CAP_MULTIPLIER = 1.2  # 1.2x path velocity demand — servo tracks stream without racing ahead
 CAP_SCALE_LSB_PER_DEG_S = 1.0 / 0.088  # 0x2E LSB ≈ 0.088 deg/s
 RESUME_DRIFT_THRESHOLD_RAD = 0.1  # ~5.7 deg, about 2x typical 50ms lookahead travel
@@ -370,21 +370,22 @@ class StreamingMixin:
                     if cycle < 5:
                         print(f"[Streaming] Write error at cycle {cycle}: {e}")
 
-                # Interleaved position read: time-based, every READ_INTERVAL_S.
-                # Happens after the write, inside this loop — no bus contention
-                # with another thread.  Updates utils so the telemetry loop
-                # picks up live positions without its own serial reads.
-                now = time.monotonic()
-                if now - last_read_time >= READ_INTERVAL_S:
-                    last_read_time = now
-                    try:
-                        raw = self.sync_read_positions(timeout_s=0.02)
-                        if raw:
-                            read_q = self.raw_to_joint_positions(raw)
-                            if utils_ref is not None:
-                                utils_ref.current_logical_joint_angles_rad = list(read_q)
-                    except Exception:
-                        pass
+                # Interleaved position read: DISABLED for diagnostic — the 20ms
+                # read timeout eats 2 pacing periods at 100Hz and nearly the full
+                # period at 33Hz, causing write timing jitter that manifests as
+                # motion twitch on slow moves. Comment out the next 3 lines to
+                # re-enable for GUI position feedback.
+                # now = time.monotonic()
+                # if now - last_read_time >= READ_INTERVAL_S:
+                #     last_read_time = now
+                #     try:
+                #         raw = self.sync_read_positions(timeout_s=0.02)
+                #         if raw:
+                #             read_q = self.raw_to_joint_positions(raw)
+                #             if utils_ref is not None:
+                #                 utils_ref.current_logical_joint_angles_rad = list(read_q)
+                #     except Exception:
+                #         pass
 
                 # Pace — single sleep for the full period
                 cycle += 1

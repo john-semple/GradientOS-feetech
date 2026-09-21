@@ -1,3 +1,67 @@
+## 2026-09-15 — Sprint 10 tuning: hardware diagnostics (cap floor + interleaved read)
+
+- Hardware test 1 — CAP_FLOOR 150 → 60: **no difference** in slow-move jitter.
+  Cap is not the binding constraint; servo tracks goal stream speed, not cap.
+- Hardware test 2 — interleaved read fully disabled: **no difference** either.
+  Read was not the jitter source on slow moves (20ms read fits inside the 33Hz
+  period; it was only a deadline-blower at 100Hz).
+- Both negative results point at the **33 Hz re-plan sawtooth** as the remaining
+  suspect: each goal write triggers firmware Case A re-plan (abort current
+  trapezoid, re-plan from pos+vel, decelerate toward arrival); at 33 Hz the
+  servo executes ~30ms of each plan, so decel-sag/rewrite-boost cycles at 33 Hz
+  are felt as jitter throughout slow moves. J1/J2 (high load + backlash)
+  amplify the velocity ripple; fast moves at 100 Hz rewrite plans every 10ms
+  before decel shaping develops — smooth (matches Sprint 07 Part C bench).
+- User's sharp observation: PID backlash hunting would show at ALL speeds, not
+  just slow — consistent with pacing-frequency hypothesis, not PID.
+- Also explains iteration history: iter 4-5 lowered frequency to fight 100Hz
+  quantization buzz, traded it for re-plan sawtooth; "still slightly jerky on
+  slow parts" was the sawtooth appearing.
+- Next experiment (pending user approval to move arm): force slow moves to 100Hz
+  (SLOW_MOVE_THRESHOLD_DEG_S = 0). Smooth → 33Hz was the culprit. Micro-buzz
+  returns → land slow non-weld moves on Sprint 04 endpoint paradigm
+  (plan_profiled_segment) instead — single goal + matched cap, firmware's own
+  smooth trapezoid (proven Home-button pattern).
+- Interleaved read remains disabled in code (diagnostic state — GUI position
+  feedback during moves is stale until re-enabled with a shorter timeout).
+- 36/36 streaming tests pass.
+
+## 2026-09-15 — Sprint 09: added Workstream E (per-servo data view) + wiggle axis auto-assign
+
+- User asked to extend the GUI sprint (Sprint 09, not 11/12 — those are tool
+  change and reactive motion) with two features:
+  1. Expandable per-servo data view showing temperature, torque/load, and
+     velocity for each servo (new Workstream E).
+  2. While wiring jog controls to an external RC/gamepad (Workstream D), add an
+     axis auto-assignment wizard that prompts the operator to wiggle each axis
+     in turn (X, then Y, then Z) and auto-detects which physical stick maps to
+     each DOF.
+- Workstream E details: collapsed row = ID + label + temp/torque/velocity
+  badges with color thresholds; expanded = full live values + per-servo
+  sparkline. Reuses existing telemetry SSE stream. Only backend work is adding
+  torque/load to the bulk read if not already present (additive, gated behind a
+  capability flag if expensive on one servo backend).
+- Wiggle wizard details: prompt-detect-assign cycle per DOF, samples
+  navigator.getGamepads() at ~60 Hz, picks max-deflection axis above a
+  threshold, records axis index + invert flag, persists per
+  vendor+product ID in localStorage. Same UX for the evdev backend path.
+- Updated `feetech-project/sprints/sprint-09-gui-improvements.md` only — no
+  code changes. Sequencing & Notes updated to cover E and the wiggle wizard.
+- Verified: Sprint 09 is the GUI sprint; 11 = automated tool change, 12 =
+  reactive motion (hypothetical). Did not touch 11 or 12.
+
+
+- User reported persistent twitch on slow moves, especially J1/J2 (backlash).
+- Root cause analysis: CAP_FLOOR=150 LSB (13.2 deg/s) was 2.6× over-demand for
+  slow moves at 5 deg/s. Servo raced across backlash gap to each tiny lookahead
+  goal, arrived, stalled, waited, raced again — overshoot-stall at 100 Hz.
+- Firmware hard floor is 50 LSB (4.4 deg/s) per Sprint 07 Part A.
+- Lowered CAP_MIN and CAP_FLOOR from 150 → 60 LSB (5.3 deg/s), just above firmware
+  floor. For a 5 deg/s move, cap is now 1.06× demand instead of 2.6×.
+- 36 streaming tests pass. Pending hardware visual inspection.
+- Next: hill-climb over remaining Option A params (lead time, pacing freq, read
+  timing, cap multiplier) using sim with dynamics model + backlash simulation.
+
 ## 2026-09-15 — Sprint 10: tuning iterations on real hardware
 
 - Six iterations of tuning on real hardware after initial implementation.

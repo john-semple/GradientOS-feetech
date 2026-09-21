@@ -185,6 +185,77 @@ the web UI. The config is set at startup in the controller.
 
 ---
 
+## Workstream E — Expandable Per-Servo Data View (temperature / torque / velocity)
+
+### Problem statement
+
+Telemetry already carries per-servo voltage, current, drive duty, and temperature
+(see `servo_telemetry_stream.py` block1 decode: `pos, spd, drive_duty, voltage_v,
+temp_c`), and the existing `TelemetryCharts.tsx` plots these as sparklines. But
+there is **no per-servo detail panel** where an operator can see, at a glance,
+all critical live values (temperature, torque/load, velocity) for a *single*
+servo side-by-side, nor an expandable row layout that lets you scan the whole
+chain and drill into one servo when something looks off. During bring-up and
+debug this is the most-asked-for view: "which servo is getting hot," "which
+joint is fighting itself," "how fast is J4 actually spinning."
+
+### Tasks
+
+- [ ] **Confirm the telemetry contract.** Audit what `servo_telemetry_stream.py`
+      already exposes per servo (`temp_c`, `pos`, `spd`, `drive_duty`,
+      `voltage_v`) and what is *not* yet streamed but is available on the bus:
+      - **Torque / load**: STS3215 exposes a present-load register; HLS3950 has
+        an equivalent. Decide whether to add it to the bulk-read block or derive
+        it from `drive_duty` as a proxy. If added, extend the telemetry stream
+        schema and the `TelemetryEvent` TS type.
+      - **Velocity**: present speed (`spd`) is already in the stream — confirm
+        units (deg/s vs raw count/s) and surface it consistently as deg/s in the
+        UI. If the raw unit is servo-count/s, add a conversion helper in the
+        servo backend so the UI never does unit math.
+- [ ] **Build an expandable per-servo row component** (`ServoDetailRow.tsx`):
+  - Collapsed state: one row per servo ID — `ID | label (J1..J6/Gripper) | temp
+    badge | torque/load badge | velocity readout | status dot`. Color the temp
+    badge (green < 45 °C, amber 45–60, red > 60) and the torque/load badge
+    similarly.
+  - Expanded state: a panel slides down showing the full live values for that
+    servo (temp, torque/load, velocity, position, voltage, current, drive duty,
+    alarm flags) plus the existing sparkline history for that servo only
+    (reuse the sparkline renderer from `TelemetryCharts.tsx`).
+  - Only one row expanded at a time (accordion), or multiple — pick whichever
+    feels better in testing; default to accordion.
+- [ ] **Wire it into the telemetry panel.** Add the expandable list below (or
+      alongside) the existing `TelemetryCharts` in the right-side telemetry
+      area. It must share the same `TelemetryEvent` stream — no second SSE
+      connection. Keep a rolling buffer per servo (the charts already do this;
+      factor the buffer out into a small hook so both views share it).
+- [ ] **Backend (only if torque/load is not already streamed)**: extend the
+      bulk-read block in `servo_telemetry_stream.py` to include the present-load
+      register for both STS3215 and HLS3950 backends, and add `load_pct` (or
+      `torque_pct`) to the telemetry schema. Update the TS `TelemetryEvent`
+      type to match. If the register read is expensive on one backend, gate it
+      behind a capability flag rather than slowing the whole stream.
+- [ ] **Tests**: vitest unit test for `ServoDetailRow` (collapsed/expanded
+      render, badge color thresholds, missing-data state); follow the
+      `installFetchMock` pattern for any API-fed bits. Backend: if the telemetry
+      schema changes, add/extend the `tests/` case covering the stream decode.
+- [ ] **Validate** on the bench arm: confirm temp readings track a servo that
+      has been jogging for a few minutes; confirm velocity reads ~0 at rest and
+      sensible values during a programmed move; confirm torque/load rises during
+      a grasp or against gravity on the shoulder joints.
+
+### Definition of done (Workstream E)
+
+- Every servo has an expandable row showing live temperature, torque/load, and
+  velocity (plus the existing voltage/current/duty/position/alarm data)
+- Badge color thresholds make hot/overloaded servos obvious at a glance in the
+  collapsed list
+- No second telemetry connection — reuses the existing SSE stream
+- `npm run build` passes; vitest covers the new component; pytest covers any
+  backend telemetry schema change
+- Validated on the bench arm against real thermal/load conditions
+
+---
+
 ## Workstream D — RC Controller / Gamepad Input (optional, lower priority)
 
 ### Problem statement
@@ -214,6 +285,33 @@ for calibration (Workstream B) and manual positioning.
 - [ ] **Controller mapping UI**: Let the operator assign axes/buttons to jog DOFs
   (linear X/Y/Z, angular roll/pitch/yaw, or joint J1-J6). Include a deadzone
   setting and a max-velocity scaling slider.
+- [ ] **Axis auto-assignment ("wiggle" wizard)**: Make the axis→DOF mapping
+      trivial to set up without guessing which stick is which. Add a
+      "Auto-Assign Axes" wizard flow:
+  1. Operator clicks **Auto-Assign** → UI prompts: "Move the stick/axis you
+     want to control **X** now."
+  2. UI polls all gamepad axes, detects the one with the largest deflection
+     over a ~2 s window, and assigns it to X (record axis index + sign/invert
+     flag so a stick pushed the "wrong way" still maps correctly).
+  3. Repeat for **Y**, then **Z** — same prompt-detect-assign cycle.
+  4. Optionally extend to roll/pitch/yaw and/or joint J1–J6 if the controller
+     has enough axes; the wizard should support assigning as many or as few
+     DOFs as the controller exposes axes for.
+  5. Show a summary table (DOF → axis index, inverted y/n) with per-row
+     "Re-assign" and "Clear" buttons so a single mis-detection can be fixed
+     without re-running the whole wizard.
+  6. Persist the mapping to `localStorage` keyed by controller vendor+product
+     ID so re-plugging the same controller restores the map automatically.
+  - Detection details: sample `navigator.getGamepads()` at ~60 Hz during each
+    prompt window; compute max-abs-deflection per axis; require a minimum
+    threshold (e.g. 0.3 of full range) to register as "intentional" so a
+    jittery stick doesn't get picked by accident; ignore axes already assigned
+    in this wizard run.
+  - This is the browser-Gamepad-API path; if the backend-evdev path from the
+    research task above is chosen instead, implement an equivalent wizard that
+    streams evdev axis events to the UI over SSE/WebSocket for the same
+    prompt-detect-assign UX. Keep the wizard UX identical regardless of input
+    source — only the transport differs.
 - [ ] **Safety**: Require deadman (button hold) on the gamepad to enable motion.
       Auto-stop on disconnect. Show a "Controller connected" indicator in the UI.
 - [ ] Test with at least one real input device (USB gamepad or RC dongle).
@@ -239,7 +337,14 @@ for calibration (Workstream B) and manual positioning.
   or restart-on-config-change) that could expand scope.
 - **Workstream D (RC input) depends on A** (jog velocity endpoint already exists, but
   joint jog endpoint from A is needed if RC controls individual joints). It is
-  optional and can be deferred.
+  optional and can be deferred. The wiggle auto-assignment wizard inside D is
+  purely UI-side and can be built as soon as any gamepad input path (browser or
+  evdev) is wired, even before all DOFs are mappable.
+- **Workstream E (per-servo data view) is independent** and can be done in
+  parallel with any other workstream. It only depends on the existing telemetry
+  stream; the only backend work is *adding* torque/load to the bulk read if it
+  isn't already there — that change is additive and touches only
+  `servo_telemetry_stream.py` and the TS `TelemetryEvent` type.
 - If scope is too large for one sprint, split: A+B as "Sprint 09a: Jog + Calibration",
   C+D as "Sprint 09b: Config Selector + Input Device". The workstreams are designed
   to be splittable.
