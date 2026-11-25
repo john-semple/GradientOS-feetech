@@ -226,6 +226,11 @@ class HLS3950Backend(StreamingMixin, ActuatorBackend):
         except serial.SerialException as e:
             print(f"[HLS3950] ERROR: Could not open serial port {resolved_port}: {e}")
             return False
+
+        # CH340 latency-timer fix: deliver received bytes after ~1 ms instead
+        # of the 16 ms default — measured 30 ms sync reads drop to ~2-5 ms.
+        from ..serial_low_latency import apply_low_latency
+        apply_low_latency(self._ser, resolved_port)
         
         # Ping all configured servos
         print("[HLS3950] Pinging configured servos...")

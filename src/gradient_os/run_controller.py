@@ -310,6 +310,13 @@ Examples:
                         q = servo_driver.get_current_arm_state_rad(verbose=False)
                     g = utils.current_gripper_angle_rad if utils.gripper_present else None
                     msg: dict[str, object] = {"t": time.time(), "joints": [float(x) for x in q]}
+                    # Age of the physical read behind `joints` — during
+                    # streaming this is the pacing loop's interleaved-read
+                    # timestamp; the gap between `t` and `pos_ts` is the
+                    # backend staleness (Sprint 10 GUI-lag diagnosis).
+                    pos_ts = getattr(utils, "current_logical_joint_angles_ts", 0.0)
+                    if pos_ts > 0.0:
+                        msg["pos_ts"] = float(pos_ts)
                     if g is not None:
                         msg["gripper"] = float(g)
                     msg["weld_active"] = bool(utils.trajectory_state.get("weld_active", False))

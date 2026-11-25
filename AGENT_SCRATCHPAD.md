@@ -25,6 +25,8 @@ Use this file as persistent, repo-local execution memory.
 
 ## Retained Lessons
 
+- [user] User's informal sprint descriptions can conflate sprints (called the Sprint 10 executor rewrite + Sprint 05 HLS work "sprint 7"). [self] Before confirming/denying a "sprint N did X" claim, read the actual sprint file; answer claim-by-claim against it. Sprint 07 = bench feasibility (Case A verdict) only; implementation lives in Sprint 10.
+
 - [user] Prefer implementation over discussion; "do it, do not only explain."
 - [user] UI preferences are specific and iterative; keep changes minimal and visual hierarchy clean.
 - [tool] Build and lint checks (`npm run build`, `ReadLints`) catch regressions quickly in the web-ui workflow.
@@ -44,6 +46,67 @@ Use this file as persistent, repo-local execution memory.
 - [self] **Read logs carefully.** `[STS3215 SyncRead] WARNING: No response from IDs` messages were the key diagnostic for bus contention. They appeared before motion problems were reported but weren't recognized until the user reported jerkiness.
 
 ## Session Entries
+
+### 2026-09-21 — Sprint 10: measured the LIVE pipeline; frontend was the glitch
+
+- [method] Subscribed to /monitor with a raw socket (http.client and read1
+  both silently stall on chunked SSE — dechunk manually: hex-size\r\n frames,
+  events end \r\n). Same-host subscribe makes arrival-t minus msg.t an exact
+  end-to-end staleness measure. Result: data fresh (p50 1ms), beats irregular
+  (p50 102ms, max 306ms skips).
+- [lesson] "Still glitchy" after a backend fix ≠ backend still broken. Measure
+  where the glitch lives before touching code — the fresh-data/irregular-beats
+  signature pointed straight at pacing + frontend, not staleness.
+- [find] App.tsx spike filter (>0.8 rad/0.25s) rejected legitimate motion:
+  426.8 deg/s moves are 0.75 rad per 102ms frame; any beat skip → rejected
+  frame → freeze-snap. Filters built to mask a data problem become bugs when
+  the data problem is fixed. Removed jump check, kept timestamp ordering check.
+- [find] API hardcoded 10 Hz telemetry; raised to 30. With CH340 latency fix,
+  30 Hz costs ~5ms/bus-cycle; without it 30 Hz would have tripled the 30ms
+  read tax — the latency fix was the enabler.
+- [process] The running controller was 3 hours old — pre-fix code, no pos_ts in
+  events. ALWAYS check process age (ps etime) when validating a fix: the user
+  may be testing the old binary. Restart of controller AND API is required for
+  test 3 (the API caches its own 10 Hz command otherwise).
+
+### 2026-09-15 — Sprint 10: CH340 latency timer (the 300x read tax)
+
+- [user] Asked why idle feedback was "only 10 Hz" — good question: the wire
+  does a 6-servo read in ~0.1 ms; the 30 ms reads in the log were ~300x that.
+- [root cause] CH340 Linux driver latency timer (default 16 ms) batches RX
+  bytes before userspace sees them. Every sync_read pays it. The 10 Hz default
+  was almost certainly shaped by this invisible tax.
+- [fix] backends/serial_low_latency.py — sysfs latency_timer=1 + TIOCSSERIAL
+  ASYNC_LOW_LATENCY ioctl, applied at every port open (resets on replug),
+  graceful degradation with udev-rule hint on permission failure. Wired into
+  sts3215 driver, hls3950 driver, legacy servo_driver.
+- [lesson] When a measured duration is orders of magnitude above wire-speed
+  math, suspect the USB-serial driver delivery path, not the protocol.
+- [note] ASYNC_LOW_LATENCY sets the same 1 ms timer on ch341; doing BOTH
+  methods is belt-and-braces — one may fail under udev permission setups.
+- [future] If reactive motion (Sprint 11/12) needs mid-move physical reads,
+  they are now affordable (~2-5 ms). Also telemetry_hz can be raised from 10
+  once validated on hardware.
+
+### 2026-09-15 — Sprint 10: GUI lag root-caused (instrument first paid off)
+
+- [user] Supplied one instrumented hardware log; it contained the whole story:
+  reads avg 29.8ms/max 64ms + 25% failures + per-servo timeout alert spam.
+- [lesson] The instrument-before-fixing order was right — the log falsified
+  my original latency decomposition (I expected phase-misaligned 10Hz loops
+  to be the dominant term; actually failed reads eating whole pacing periods
+  and freezing utils were). 500ms lag was 20ms-timeout reads + failure freezes
+  + alert drain compounding, not two-loop sampling.
+- [insight] Don't read the bus during motion when you don't have to. Sprint 07
+  Part C cruise tracking error (1-2 counts ≈ 0.1 deg) means the commanded
+  path position IS the display position. Dead-reckoning the GUI from the
+  path: zero bus cost, zero failures, pacing-rate updates. This is the
+  sprint doc's "push positions directly" idea, minus even the read.
+- [self] The alert-spam discovery (each failed sync_read fires a timeout alert
+  per missing servo → up to 78/move) also explains "alerts on the right side"
+  noise users saw during moves — fixed as a side effect of removing the reads.
+- [guardrail] Keep pos_ts in the telemetry message — staleness must stay
+  measurable or regressions in this pipeline will be invisible again.
 
 ### 2026-09-15 — Sprint 10 tuning: negative results are results (cap + read ruled out)
 
@@ -2522,3 +2585,10 @@ This is the GO outcome for saturation streaming. Details:
 #### Sprint 07 docs complete (2026-09-14)
 
 All three doc surfaces updated in one pass: sprint-07 checkbox file (COMPLETE/GO banner, evidence + auto-classifier caveats + supersession notes), diagnosis §9.3-9.5/§10.6 (fork resolved, regime map in, LSB "both right different shafts" resolution), protocol doc (0x3A encoding row + new mid-move-rewrite section). Numbers cross-checked against traces. Two probes deliberately unchecked with supersession notes — a new model of "done" for this repo: superseded items stay unchecked but annotated, so checkbox counts alone never mislead. Sprint 10 is fully unblocked (docs + calibration + design all current).
+
+#### Sprint 07 antipattern audit (2026-09-30, user-requested review)
+
+- **"Is streaming hacking the firmware?" — NO.** Three-part answer to keep straight if asked again: (1) goals are interpolated ON the planned path with lookahead INSIDE the path horizon and clamped to path bounds (stream guard) — never outside the trajectory; (2) "interrupting" = overwriting the goal register mid-move, which Part B measured the firmware explicitly supports (Case A: re-plans from present pos+vel, 3/3) — same usage pattern as Dynamixel and LeRobot SO-100 community practice; (3) only clever bit is cap sizing (the "perpetual carrot": cap ≈ 1.2-2x demand so the servo never enters decel mid-stream) — but 0x2E is documented as a ceiling, so this is tuning, not abuse. Honest caveat: the method depends on MEASURED, not SPECIFIED, firmware behavior — a Feetech firmware update could change rewrite semantics; that's why verdict + traces exist.
+- **The archived bench scripts still contain the bugs that produced false verdicts.** part_b classifier's `or reached_initial_goal` (line ~218) is structurally guaranteed to return "C" on healthy Case-A data (servo passes through goal 1 at cruise speed en route to goal 2). Lesson was written into three docs ("script verdicts are hints, traces are truth") but never backported into the script. If these scripts are ever re-run (e.g. for the HLS3950 fork test), FIX THE CLASSIFIER FIRST or hand-verify from raw traces.
+- part_c classifier same failure mode: counts start/arrival accel-decel in a mid-cruise test (no windowing) → false STOP-GO. The regime map in docs is from raw traces, correct.
+- Fail-silent collection is the recurring theme: read_register_bulk swallows everything → None; the Part B off-by-one and the Part C sign error were both found by a human noticing something off, not by the tooling. If writing more bench scripts: assert on minimum sample count per run, verify write return values (safe_setup ignores them), sanity-check goal direction vs. intended direction BEFORE first write.

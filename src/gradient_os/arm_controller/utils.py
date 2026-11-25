@@ -270,6 +270,11 @@ ser: 'serial.Serial | None' = None
 # the robot configuration is set. Code should check len() before accessing.
 current_logical_joint_angles_rad: list[float] = []
 
+# Wall-clock timestamp (time.time()) of the last physical position read that
+# updated current_logical_joint_angles_rad — lets telemetry consumers measure
+# position staleness during streaming moves (Sprint 10 GUI-lag diagnosis).
+current_logical_joint_angles_ts: float = 0.0
+
 # Global state for the gripper's last known angle (in radians)
 current_gripper_angle_rad = 0.0
 

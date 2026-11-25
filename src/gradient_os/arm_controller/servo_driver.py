@@ -407,7 +407,11 @@ def initialize_servos():
     try:
         utils.ser = serial.Serial(utils.SERIAL_PORT, utils.BAUD_RATE, timeout=0.1)
         print(f"[Pi] Serial port {utils.SERIAL_PORT} opened successfully at {utils.BAUD_RATE} baud.")
-        
+
+        # CH340 latency-timer fix: deliver received bytes after ~1 ms instead
+        # of the 16 ms default — measured 30 ms sync reads drop to ~2-5 ms.
+        from .backends.serial_low_latency import apply_low_latency
+        apply_low_latency(utils.ser, utils.SERIAL_PORT)
         # --- Check for presence of each servo, including the gripper ---
         print("[Pi] Pinging all configured servos...")
         present_servo_ids = []

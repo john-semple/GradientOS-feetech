@@ -2404,25 +2404,13 @@ export default function App() {
       // Drop out-of-order telemetry packets to prevent visual snap-backs.
       return;
     }
-    if (Array.isArray(joints) && joints.length > 0 && lastAcceptedJointsRef.current) {
-      const previous = lastAcceptedJointsRef.current;
-      if (previous.length === joints.length) {
-        let maxJump = 0;
-        for (let i = 0; i < joints.length; i += 1) {
-          const jump = Math.abs(joints[i] - previous[i]);
-          if (jump > maxJump) {
-            maxJump = jump;
-          }
-        }
-        const dtSec =
-          lastTimeSec !== null ? Math.max(0, candidateTimeSec - lastTimeSec) : Number.POSITIVE_INFINITY;
-        // Reject single-frame spikes (commonly stale packets) that imply impossible
-        // arm motion over one telemetry interval.
-        if (dtSec <= 0.25 && maxJump > 0.8) {
-          return;
-        }
-      }
-    }
+    // NOTE: the former "reject single-frame spikes" jump filter was removed.
+    // It was built for the stale-packet era (interleaved-read failures froze
+    // positions, then a fresh packet looked like an impossible jump). With
+    // path-derived reporting + pos_ts, packets are fresh and ordered, and the
+    // filter was rejecting legitimate fast-motion frames (>0.8 rad between
+    // 10 Hz samples ≈ 46 deg/s — well within this arm's speed), which showed
+    // up as the GUI freezing mid-move then snapping forward.
 
     lastTelemetrySourceTimeRef.current = candidateTimeSec;
     if (Array.isArray(joints) && joints.length > 0) {

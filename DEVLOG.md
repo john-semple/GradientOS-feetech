@@ -1,3 +1,95 @@
+## 2026-09-30 — Sprint 07 description fact-check (Q&A, no code changes)
+
+- User asked whether their summary ("got the arm, improved the executor, USB-limited, figured out HLS3950M, ACM frame with 4x less backlash") accurately describes Sprint 07. Verified against the sprint files.
+- Verdict: conflates sprints. Sprint 07 (`sprints/archive/sprint-07-pseudo-dynamixel-feasibility-COMPLETE.md`) is bench-only research — Case A mid-move re-target verdict (3/3), LSB calibration (0.088 deg/s, floor 50), cap regime map, GO verdict. The 100 Hz / 50 ms-lookahead goal-register overwrite executor is Sprint 10; HLS3950M is Sprint 05; "Advanced Metal Research" origin, ACM machined frame, and 4x-backlash figure are not documented anywhere in the repo (repo backlash plan = paired-servo preload, sprint-06, deferred).
+- "USB speed is the only limiting factor" is roughly consistent with measured ~160 Hz CH340 bus ceiling / ~3 ms sync_write dispatch.
+- No code touched; gates not applicable.
+
+## 2026-09-30 — Sprint 07 process review (antipattern audit, no code changes)
+
+- User-requested examination of the Sprint 07 bench process (`feetech-project/sprints/archive/sprint-07-pseudo-dynamixel-feasibility-COMPLETE.md` + the four bench scripts) for antipatterns, plus a plain-language answer to "is streaming hacking the firmware?"
+- **Answer:** not hacking. Goals are interpolated ON the planned path (with 50-100 ms lookahead inside the path horizon) and clamped to path bounds; the only undocumented firmware behavior (mid-move goal-rewrite semantics) was measured empirically before being relied on (Case A, 3/3). Writes use documented registers (0x2A/0x2E/0x29) via standard write/SYNC_WRITE. Residual risk is firmware-revision dependence, not exploit usage.
+- **Antipatterns found (analysis-only, no fixes applied):**
+  1. Part B auto-classifier structurally guaranteed false "C" (`or reached_initial_goal` at `part_b_midmove_retarget.py:218` fires on any pass-through of goal 1 at cruise speed); lesson recorded in docs but script never corrected — re-runs will misclassify again. Part C classifier similarly false "STOP-GO" (start/arrival decel not windowed out).
+  2. Fail-silent data collection: `bench_utils.read_register_bulk` swallows all exceptions → None; the Part B off-by-one (resp_len length+5 vs +6) produced a 0-sample run that "succeeded". Part D added a NO-TELEMETRY check; parts B/C never got one.
+  3. Post-hoc guardrails: Part C's first run streamed goals upward (sign error) to the 4094 seam; the per-goal bounds clamp was added only after the incident.
+  4. Generalization risk: n=1 servo/firmware/PSU-voltage; 3 trials = 3 repeats on one unit; HLS3950 Case A still assumed (Sprint 10 TODO); 0x3A 50-LSB quantization bounds the "no velocity dip" claim (~4.4 deg/s resolution).
+  5. Minor smells: no-op "extend delay check" branch (part_b ~line 146), dead `if False` pacing leftover (part_d line 133), stale argparse help "(default: 3)" vs DEFAULT_FLOOR=50 (part_c), `safe_setup` ignores write return values (only goal readback is verified).
+- Process strengths noted (falsifiable A/B/C hypotheses defined pre-test, calibration-first sequencing, raw traces archived, honest failure logging, superseded probes annotated not deleted).
+- No production code touched; gates not applicable.
+
+## 2026-09-21 — Sprint 10: GUI glitch root-caused in the FRONTEND (measured live)
+
+- User reported still glitchy after backend fixes. Live SSE measurement
+  (raw-socket subscribe to /monitor, same-host so clocks align):
+  - end-to-end staleness p50 1 ms, p95 204 ms — DATA WAS FRESH
+  - inter-event gap p50 102 ms, MAX 306 ms — stream skips beats
+  - controller msg.t spacing matched the gap skips — origin at controller loop
+  - pos_ts ABSENT from all 121 events — controller process predates the
+    path-derived-reporting + latency fixes (started 16:57, old code)
+- Three compounding causes found by reading the pipeline end-to-end:
+  1. React spike filter (App.tsx) rejected any frame with a >0.8 rad joint
+     jump in ≤0.25 s. Rotysquare step 5 runs 426.8 deg/s = 0.75 rad/102ms
+     frame — any beat-skip pushed frames over the threshold → silent frame
+     drops → freeze-then-snap. Filter was built for the stale-packet era
+     (interleaved-read failures); the backend fix eliminated that era.
+     REMOVED the jump check; kept the out-of-order timestamp check.
+  2. API hardcoded START_TELEMETRY at 10 Hz (api/main.py) — downsampled the
+     33-100 Hz backend updates. Raised to 30 Hz.
+  3. Controller loop beat-skips (max 306 ms) — consistent with 2 Hz extended
+     servo block reads costing ~3×30 ms each under the OLD 16 ms latency
+     timer. The running process predates the CH340 latency fix; restart
+     should collapse both the skips and idle-read cost.
+- All gates pass: pytest 92, vitest 8, build clean.
+- HARDWARE TEST 3: restart BOTH controller and API, run rotysquare with UI
+  open. Expect smooth tracking; verify [SerialLatency] line at startup.
+
+## 2026-09-15 — Sprint 10: CH340 latency-timer fix for serial reads
+
+- The instrumented log raised a deeper question: why did 6-servo sync reads
+  average 29.8 ms when wire time is ~0.1 ms at 1 Mbaud? Answer: the CH340
+  USB-serial driver's latency timer (default 16 ms) batches received bytes
+  before delivering them to userspace — every read pays that tax. This is
+  also the true ceiling behind the 10 Hz telemetry default.
+- New module `backends/serial_low_latency.py`: applies latency_timer=1 via
+  sysfs AND the TIOCSSERIAL ASYNC_LOW_LATENCY ioctl, every time a port opens
+  (the setting resets on USB replug). Failures degrade gracefully (no
+  permission → default latency + printed udev-rule hint, never an error).
+- Wired into all three port-open sites: STS3215 driver, HLS3950 driver,
+  legacy servo_driver path.
+- Expected effect: idle telemetry reads ~30 ms → ~2-5 ms; the 10 Hz loop can
+  now realistically run 20-30 Hz if desired; if mid-move physical reads are
+  ever needed (reactive motion sprints), they are now affordable.
+- 92 tests pass. Pending hardware validation: watch for the
+  `[SerialLatency]` line at controller startup + snappier arm feedback when
+  physically moving it while idle.
+
+## 2026-09-15 — Sprint 10: GUI lag root-caused and fixed (path-derived position reporting)
+
+- Instrumented the pacing loop's interleaved reads; one hardware run's log
+  nailed the lag source:
+  - Reads averaged 29.8 ms (max 64.1 ms) — at 33 Hz pacing each read ate the
+    entire 30 ms period, starving the write stream right after every read.
+  - 25% of reads failed (13/51) with 0-byte responses; on failure utils kept
+    a stale position until the next success — the glitchy, unpredictable
+    character of the lag.
+  - Each failed read fired a timeout alert per missing servo (up to 78/move)
+    — UI alert spam on top of stale positions.
+- Fix: STOPPED reading the bus during streaming entirely. The pacing loop now
+  reports position(t_now) from the commanded path every cycle — Sprint 07
+  Part C measured cruise tracking error at 1-2 encoder counts (~0.1 deg), so
+  the commanded position IS the arm position for display purposes.
+  - GUI updates now at full pacing rate (33-100 Hz) instead of 10 Hz
+  - Zero bus traffic for feedback → no read failures, no write starvation,
+    no stale-freeze windows, no alert spam
+  - Physical reads remain between moves (telemetry loop) and on
+    resume/cancel (sync_read paths unchanged)
+- Added `utils.current_logical_joint_angles_ts` + `pos_ts` in the telemetry
+  message so downstream staleness stays measurable.
+- 92 tests pass (1 pre-existing flaky end-to-end failure deselected).
+- Pending hardware validation: GUI should track moves smoothly with ~100-200ms
+  residual lag (telemetry 10 Hz + render), no glitchy freezes.
+
 ## 2026-09-15 — Sprint 10 tuning: hardware diagnostics (cap floor + interleaved read)
 
 - Hardware test 1 — CAP_FLOOR 150 → 60: **no difference** in slow-move jitter.

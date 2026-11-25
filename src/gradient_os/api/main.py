@@ -247,7 +247,11 @@ class TelemetryHub:
         assert sockname is not None
         listen_host = self._advertise_host or _resolve_controller_endpoint()[0]
         self._listen_port = sockname[1]
-        start_cmd = f"START_TELEMETRY,{listen_host}:{self._listen_port},10"
+        # Telemetry rate for the SSE monitor stream. 30 Hz keeps motion display
+        # smooth (10 Hz produced visible stepping and, with an occasional missed
+        # beat, let the frontend spike filter reject legitimate fast-motion
+        # frames). CH340 latency fix makes each read ~2-5 ms, so 30 Hz is cheap.
+        start_cmd = f"START_TELEMETRY,{listen_host}:{self._listen_port},30"
         ok, detail = await run_in_threadpool(_send_controller_command, start_cmd)
         if not ok:
             await self._cleanup_transport()

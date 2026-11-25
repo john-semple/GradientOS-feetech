@@ -26,12 +26,6 @@ CAP_MULTIPLIER = 1.2  # 1.2x path velocity demand — servo tracks stream withou
 CAP_SCALE_LSB_PER_DEG_S = 1.0 / 0.088  # 0x2E LSB ≈ 0.088 deg/s
 RESUME_DRIFT_THRESHOLD_RAD = 0.1  # ~5.7 deg, about 2x typical 50ms lookahead travel
 
-# Interleaved read: do a position read every N milliseconds to give the UI
-# live position feedback.  Time-based (not cycle-based) so the read rate is
-# consistent regardless of pacing frequency.  The read happens after the
-# write, inside the pacing loop — no second thread touches the bus.
-READ_INTERVAL_S = 0.100  # 10 Hz position feedback
-
 # Slow move threshold: if the fastest joint's velocity demand is below this,
 # use the slow pacing frequency (larger goal steps, eliminates micro-vibration
 # from tiny goal deltas quantizing in the servo's 12-bit encoder).
@@ -324,7 +318,6 @@ class StreamingMixin:
             pass
 
         cycle = 0
-        last_read_time = 0.0
         try:
             while not handle._should_stop():
                 # Handle pause
@@ -338,7 +331,6 @@ class StreamingMixin:
                     if start_time is None:
                         handle._mark_done()
                         return
-                    last_read_time = 0.0  # force a read on resume
 
                 t_now = time.monotonic() - start_time
                 t_lookahead = t_now + LOOKAHEAD_S
@@ -370,22 +362,23 @@ class StreamingMixin:
                     if cycle < 5:
                         print(f"[Streaming] Write error at cycle {cycle}: {e}")
 
-                # Interleaved position read: DISABLED for diagnostic — the 20ms
-                # read timeout eats 2 pacing periods at 100Hz and nearly the full
-                # period at 33Hz, causing write timing jitter that manifests as
-                # motion twitch on slow moves. Comment out the next 3 lines to
-                # re-enable for GUI position feedback.
-                # now = time.monotonic()
-                # if now - last_read_time >= READ_INTERVAL_S:
-                #     last_read_time = now
-                #     try:
-                #         raw = self.sync_read_positions(timeout_s=0.02)
-                #         if raw:
-                #             read_q = self.raw_to_joint_positions(raw)
-                #             if utils_ref is not None:
-                #                 utils_ref.current_logical_joint_angles_rad = list(read_q)
-                #     except Exception:
-                #         pass
+                # Live position reporting for the GUI — path-derived, no bus
+                # traffic.  Hardware logs (2026-09-15) showed interleaved
+                # sync_reads during streaming averaged 30 ms (max 64 ms) with
+                # 25% failures: they ate the whole 33 Hz pacing period,
+                # starved the write stream, and left utils stale on every
+                # failure — the source of the glitchy 0.5 s GUI lag.
+                # Instead, report position(t_now) from the commanded path:
+                # Sprint 07 Part C measured cruise tracking error at 1-2
+                # encoder counts (~0.1 deg), so the commanded position IS the
+                # arm position for display purposes — at full pacing rate with
+                # zero bus cost.  Physical reads still happen between moves
+                # (telemetry loop) and on resume/cancel (sync_read paths).
+                if utils_ref is not None:
+                    report_q = self._interpolate_path(path, t_now)
+                    report_q = self._clamp_to_path_bounds(report_q, path_min, path_max)
+                    utils_ref.current_logical_joint_angles_rad = list(report_q)
+                    utils_ref.current_logical_joint_angles_ts = time.time()
 
                 # Pace — single sleep for the full period
                 cycle += 1
